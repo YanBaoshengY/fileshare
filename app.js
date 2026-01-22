@@ -399,7 +399,8 @@ class FileTransferApp {
 
     connectToRoom(roomId) {
         const conn = this.peer.connect(roomId, {
-            reliable: true
+            reliable: true,
+            metadata: { nickname: this.nickname }
         });
 
         conn.on('open', () => {
@@ -437,7 +438,7 @@ class FileTransferApp {
                 if (!this.devices[conn.peer]) {
                     this.devices[conn.peer] = {
                         id: conn.peer,
-                        nickname: '新设备',
+                        nickname: conn.metadata?.nickname || '匿名',
                         joinedAt: Date.now()
                     };
                     this.renderDevicesList();
@@ -828,7 +829,8 @@ class FileTransferApp {
     connectToDevice(deviceId) {
         if (this.peer && deviceId !== this.peerId) {
             const conn = this.peer.connect(deviceId, {
-                reliable: true
+                reliable: true,
+                metadata: { nickname: this.nickname }
             });
 
             this.connections.push(conn);
