@@ -63,6 +63,59 @@ header .user-count {
     color: #667eea;
 }
 
+.devices-list {
+    margin-top: 20px;
+    padding: 16px 20px;
+    background: rgba(102, 126, 234, 0.1);
+    border-radius: 16px;
+}
+
+.devices-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.7);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.devices-list-content {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.device-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    font-size: 14px;
+    color: #ffffff;
+    animation: slide-up 0.3s ease;
+}
+
+.device-item .device-icon {
+    font-size: 18px;
+}
+
+.device-item .device-name {
+    font-weight: 500;
+}
+
+.device-item .device-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #34c759;
+}
+
+.devices-list.hidden {
+    display: none;
+}
+
 .container {
     width: 100%;
     max-width: 420px;

@@ -1,17 +1,19 @@
 class FileTransferApp {
     constructor() {
         this.peer = null;
-        this.conn = null;
+        this.connections = [];
+        this.devices = {};
+        this.pendingConnections = new Set();
         this.roomId = null;
         this.peerId = null;
-        this.nickname = localStorage.getItem('nickname') || '';
-        this.peerNickname = '对方';
+        this.nickname = localStorage.getItem('nickname') || '匿名';
         this.filesToSend = [];
         this.receivedFiles = [];
         this.transferHistory = [];
         this.messages = [];
         this.fileChunks = {};
         this.CHUNK_SIZE = 16 * 1024;
+        this.isHost = false;
 
         this.initElements();
         this.initEventListeners();
@@ -28,8 +30,8 @@ class FileTransferApp {
             connectionStatus: document.getElementById('connectionStatus'),
             joinForm: document.getElementById('joinForm'),
             roomIdInput: document.getElementById('roomIdInput'),
-            peerInfo: document.getElementById('peerInfo'),
-            peerNickname: document.getElementById('peerNickname'),
+            devicesList: document.getElementById('devicesList'),
+            devicesListContent: document.getElementById('devicesListContent'),
             dropZone: document.getElementById('dropZone'),
             fileInput: document.getElementById('fileInput'),
             fileList: document.getElementById('fileList'),
@@ -104,12 +106,14 @@ class FileTransferApp {
 
     createRoom() {
         this.roomId = this.generateRoomId();
+        this.isHost = true;
         this.elements.roomId.textContent = this.roomId;
         this.elements.roomDisplay.classList.add('show');
         this.elements.createRoomBtn.classList.add('hidden');
         this.elements.joinRoomBtn.classList.add('hidden');
 
         this.initPeer(this.roomId);
+        this.addMyDevice();
         this.showToast('房间创建成功', 'success');
     }
 
@@ -126,12 +130,78 @@ class FileTransferApp {
         }
 
         this.roomId = inputRoomId;
+        this.isHost = false;
         this.elements.roomId.textContent = this.roomId;
         this.elements.roomDisplay.classList.add('show');
         this.elements.joinForm.classList.remove('show');
 
         this.initPeer();
         this.showToast('正在连接...', 'success');
+    }
+
+    addMyDevice() {
+        this.devices[this.peerId] = {
+            id: this.peerId,
+            nickname: this.nickname,
+            joinedAt: Date.now()
+        };
+        this.renderDevicesList();
+    }
+
+    addDevice(deviceId, nickname) {
+        this.devices[deviceId] = {
+            id: deviceId,
+            nickname: nickname,
+            joinedAt: Date.now()
+        };
+        this.renderDevicesList();
+        this.showToast(`${nickname} 加入了房间`, 'success');
+    }
+
+    removeDevice(deviceId) {
+        if (this.devices[deviceId]) {
+            const nickname = this.devices[deviceId].nickname;
+            delete this.devices[deviceId];
+            this.renderDevicesList();
+            this.showToast(`${nickname} 已离开`, 'success');
+        }
+
+        this.connections = this.connections.filter(c => c.peer !== deviceId);
+
+        if (Object.keys(this.devices).length <= 1) {
+            this.updateConnectionStatus('waiting', '等待连接');
+        } else {
+            const count = Object.keys(this.devices).length - 1;
+            this.updateConnectionStatus('connected', `${count} 个设备已连接`);
+        }
+    }
+
+    renderDevicesList() {
+        const deviceIds = Object.keys(this.devices);
+        
+        if (deviceIds.length <= 1) {
+            this.elements.devicesList.classList.add('hidden');
+            return;
+        }
+
+        this.elements.devicesList.classList.remove('hidden');
+
+        const icons = ['💻', '📱', '📱', '📱', '📱', '💻', '📱', '💻'];
+        
+        this.elements.devicesListContent.innerHTML = deviceIds.map((id, index) => {
+            if (id === this.peerId) return '';
+            const device = this.devices[id];
+            const icon = device.nickname.includes('手机') ? '📱' : 
+                         device.nickname.includes('电脑') ? '💻' : 
+                         icons[index % icons.length];
+            return `
+                <div class="device-item">
+                    <span class="device-icon">${icon}</span>
+                    <span class="device-name">${device.nickname}</span>
+                    <span class="device-status"></span>
+                </div>
+            `;
+        }).join('');
     }
 
     initPeer(customId = null) {
@@ -153,13 +223,15 @@ class FileTransferApp {
             this.peerId = id;
             this.updateConnectionStatus('waiting', '等待连接...');
 
-            if (!customId) {
+            if (this.isHost) {
+                this.addMyDevice();
+            } else {
                 setTimeout(() => this.connectToRoom(this.roomId), 500);
             }
         });
 
         this.peer.on('connection', (conn) => {
-            this.handleConnection(conn);
+            this.handleNewConnection(conn);
         });
 
         this.peer.on('error', (err) => {
@@ -174,57 +246,104 @@ class FileTransferApp {
                 this.showToast('连接错误', 'error');
             }
         });
+
+        this.peer.on('disconnected', () => {
+            this.updateConnectionStatus('waiting', '连接已断开');
+        });
     }
 
     connectToRoom(roomId) {
-        this.conn = this.peer.connect(roomId, {
+        const conn = this.peer.connect(roomId, {
             reliable: true
         });
 
-        this.conn.on('open', () => {
-            this.handleConnection(this.conn);
+        conn.on('open', () => {
+            this.handleNewConnection(conn);
         });
 
-        this.conn.on('error', (err) => {
+        conn.on('error', (err) => {
             console.error('Connection error:', err);
             this.showToast('连接失败', 'error');
-            this.updateConnectionStatus('error', '连接失败');
         });
     }
 
-    handleConnection(conn) {
-        this.conn = conn;
-        this.setupConnectionHandlers();
+    handleNewConnection(conn) {
+        this.connections.push(conn);
 
-        if (this.conn.open) {
-            this.onPeerConnected();
+        conn.on('open', () => {
+            this.pendingConnections.add(conn.peer);
+            setTimeout(() => {
+                if (this.pendingConnections.has(conn.peer)) {
+                    this.pendingConnections.delete(conn.peer);
+                    if (!this.devices[conn.peer]) {
+                        this.connections = this.connections.filter(c => c.peer !== conn.peer);
+                    }
+                }
+            }, 10000);
+            this.sendNickname(conn);
+        });
+
+        conn.on('data', (data) => {
+            if (data.type === 'nickname') {
+                this.pendingConnections.delete(conn.peer);
+                if (!this.devices[conn.peer]) {
+                    this.onPeerConnected(conn.peer);
+                }
+                this.devices[conn.peer] = {
+                    id: conn.peer,
+                    nickname: data.nickname,
+                    joinedAt: Date.now()
+                };
+                this.renderDevicesList();
+                this.showToast(`${data.nickname} 加入了房间`, 'success');
+            } else {
+                this.handleData(data, conn);
+            }
+        });
+
+        conn.on('close', () => {
+            this.pendingConnections.delete(conn.peer);
+            this.removeDevice(conn.peer);
+        });
+
+        conn.on('error', (err) => {
+            console.error('Connection error:', err);
+        });
+    }
+
+    sendNickname(conn = null) {
+        const message = {
+            type: 'nickname',
+            nickname: this.nickname,
+            from: this.peerId
+        };
+
+        if (conn) {
+            conn.send(message);
         } else {
-            this.conn.on('open', () => {
-                this.onPeerConnected();
-            });
+            this.broadcast(message);
         }
     }
 
-    setupConnectionHandlers() {
-        this.conn.on('data', (data) => {
-            this.handleData(data);
-        });
-
-        this.conn.on('close', () => {
-            this.showToast('对方已断开', 'error');
-            this.resetConnection();
+    broadcast(data) {
+        this.connections.forEach(conn => {
+            if (conn.open) {
+                conn.send(data);
+            }
         });
     }
 
-    onPeerConnected() {
-        this.updateConnectionStatus('connected', '已连接');
-        this.elements.peerInfo.classList.add('show');
-        this.showToast('连接成功', 'success');
+    broadcastExcept(excludePeerId, data) {
+        this.connections.forEach(conn => {
+            if (conn.open && conn.peer !== excludePeerId) {
+                conn.send(data);
+            }
+        });
     }
 
-    resetConnection() {
-        this.updateConnectionStatus('waiting', '已断开');
-        this.elements.peerInfo.classList.remove('show');
+    onPeerConnected(deviceId) {
+        const count = this.connections.length;
+        this.updateConnectionStatus('connected', `${count} 个设备已连接`);
     }
 
     updateConnectionStatus(status, message) {
@@ -295,7 +414,7 @@ class FileTransferApp {
             return;
         }
 
-        if (!this.conn || !this.conn.open) {
+        if (this.connections.length === 0 || !this.connections.some(c => c.open)) {
             this.showToast('未连接', 'error');
             return;
         }
@@ -316,7 +435,7 @@ class FileTransferApp {
         const fileSize = file.size;
         const totalChunks = Math.ceil(fileSize / this.CHUNK_SIZE);
 
-        this.conn.send({
+        this.broadcast({
             type: 'file-meta',
             fileId: fileId,
             fileName: file.name,
@@ -332,7 +451,7 @@ class FileTransferApp {
 
         const sendNext = () => {
             if (currentChunk >= totalChunks) {
-                this.conn.send({
+                this.broadcast({
                     type: 'file-complete',
                     fileId: fileId,
                     fileSize: fileSize
@@ -350,7 +469,7 @@ class FileTransferApp {
 
             if (chunkData.size === 0) {
                 currentChunk = totalChunks;
-                this.conn.send({
+                this.broadcast({
                     type: 'file-complete',
                     fileId: fileId,
                     fileSize: fileSize
@@ -358,7 +477,7 @@ class FileTransferApp {
                 return;
             }
 
-            this.conn.send({
+            this.broadcast({
                 type: 'file-chunk',
                 fileId: fileId,
                 chunk: chunkData,
@@ -401,15 +520,15 @@ class FileTransferApp {
             return;
         }
 
-        if (!this.conn || !this.conn.open) {
+        if (this.connections.length === 0 || !this.connections.some(c => c.open)) {
             this.showToast('未连接', 'error');
             return;
         }
 
-        this.conn.send({
+        this.broadcast({
             type: 'message',
             content: message,
-            senderName: this.nickname || '匿名',
+            senderName: this.nickname || '我',
             time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
         });
 
@@ -443,7 +562,7 @@ class FileTransferApp {
         return div.innerHTML;
     }
 
-    handleData(data) {
+    handleData(data, conn = null) {
         if (data.type === 'file-meta') {
             this.receiveFileMeta(data);
         } else if (data.type === 'file-chunk') {
@@ -461,9 +580,6 @@ class FileTransferApp {
         if (this.fileChunks[fileId]) {
             return;
         }
-
-        this.peerNickname = senderName;
-        this.elements.peerNickname.textContent = senderName;
 
         this.fileChunks[fileId] = {
             fileName: fileName,
