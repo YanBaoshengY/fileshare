@@ -288,59 +288,99 @@ class FileTransferApp {
 
         this.addProgressItem(fileId, file.name, fileSize);
 
+        const WINDOW_SIZE = 32;
         let sentChunks = 0;
+        let ackedChunks = 0;
+        const acked = new Set();
+        const pending = new Map();
 
-        const sendNextChunk = () => {
-            if (sentChunks >= totalChunks) {
+        const sendNextBatch = () => {
+            while (sentChunks < totalChunks && sentChunks - ackedChunks < WINDOW_SIZE) {
+                const chunkIndex = sentChunks;
+                const start = chunkIndex * this.CHUNK_SIZE;
+                const end = Math.min(start + this.CHUNK_SIZE, fileSize);
+                const chunkData = file.slice(start, end);
+
+                const reader = new FileReader();
+
+                reader.onload = (e) => {
+                    this.conn.send({
+                        type: 'file-chunk',
+                        fileId: fileId,
+                        chunk: e.target.result,
+                        chunkIndex: chunkIndex,
+                        totalChunks: totalChunks
+                    });
+
+                    pending.set(chunkIndex, {
+                        data: e.target.result,
+                        retries: 0,
+                        maxRetries: 3
+                    });
+
+                    const progress = Math.round(((sentChunks + 1) / totalChunks) * 100);
+                    const bytesSent = Math.min((sentChunks + 1) * this.CHUNK_SIZE, fileSize);
+                    this.updateProgress(fileId, progress, bytesSent);
+
+                    sentChunks++;
+
+                    if (sentChunks < totalChunks) {
+                        sendNextBatch();
+                    }
+                };
+
+                reader.onerror = () => {
+                    this.showToast(`文件读取失败`, 'error');
+                };
+
+                reader.readAsArrayBuffer(chunkData);
+
+                if (reader.readyState === 1) {
+                    break;
+                }
+            }
+        };
+
+        const checkComplete = () => {
+            if (ackedChunks >= totalChunks) {
+                this.updateProgress(fileId, 100, fileSize, '已完成');
+                this.addToHistory('sent', file.name, fileSize);
+                this.showToast(`文件 "${file.name}" 发送完成`, 'success');
                 return;
             }
 
-            const start = sentChunks * this.CHUNK_SIZE;
-            const end = Math.min(start + this.CHUNK_SIZE, fileSize);
-            const chunkData = file.slice(start, end);
-
-            const reader = new FileReader();
-
-            reader.onload = (e) => {
-                this.conn.send({
-                    type: 'file-chunk',
-                    fileId: fileId,
-                    chunk: e.target.result,
-                    chunkIndex: sentChunks,
-                    totalChunks: totalChunks
-                });
-
-                sentChunks++;
-
-                const progress = Math.round((sentChunks / totalChunks) * 100);
-                const bytesSent = Math.min(sentChunks * this.CHUNK_SIZE, fileSize);
-                this.updateProgress(fileId, progress, bytesSent);
-
-                if (sentChunks < totalChunks) {
-                    setTimeout(sendNextChunk, 5);
-                } else {
-                    setTimeout(() => {
-                        this.conn.send({
-                            type: 'file-complete',
-                            fileId: fileId,
-                            fileSize: fileSize
-                        });
-
-                        this.updateProgress(fileId, 100, fileSize, '已完成');
-                        this.addToHistory('sent', file.name, fileSize);
-                        this.showToast(`文件 "${file.name}" 发送完成`, 'success');
-                    }, 50);
+            pending.forEach((info, chunkIndex) => {
+                if (!acked.has(chunkIndex) && info.retries < info.maxRetries) {
+                    info.retries++;
+                    this.conn.send({
+                        type: 'file-chunk',
+                        fileId: fileId,
+                        chunk: info.data,
+                        chunkIndex: chunkIndex,
+                        totalChunks: totalChunks
+                    });
                 }
-            };
+            });
 
-            reader.onerror = () => {
-                this.showToast(`文件 "${file.name}" 读取失败`, 'error');
-            };
-
-            reader.readAsArrayBuffer(chunkData);
+            setTimeout(checkComplete, 200);
         };
 
-        sendNextChunk();
+        this.fileChunks[fileId] = {
+            type: 'sending',
+            fileName: file.name,
+            fileSize: fileSize,
+            totalChunks: totalChunks,
+            setAcked: (idx) => {
+                acked.add(idx);
+                ackedChunks++;
+            },
+            getAckedCount: () => ackedChunks,
+            getTotalChunks: () => totalChunks,
+            checkComplete: checkComplete,
+            isComplete: () => ackedChunks >= totalChunks
+        };
+
+        setTimeout(sendNextBatch, 100);
     }
 
     handleData(data) {
@@ -350,6 +390,27 @@ class FileTransferApp {
             this.receiveFileChunk(data);
         } else if (data.type === 'file-complete') {
             this.completeFileReceive(data);
+        } else if (data.type === 'chunk-ack') {
+            this.handleChunkAck(data);
+        }
+    }
+
+    handleChunkAck(data) {
+        const { fileId, chunkIndices } = data;
+        const fileData = this.fileChunks[fileId];
+
+        if (!fileData || fileData.type !== 'sending') {
+            return;
+        }
+
+        if (Array.isArray(chunkIndices)) {
+            chunkIndices.forEach(idx => fileData.setAcked(idx));
+        } else {
+            fileData.setAcked(chunkIndices);
+        }
+
+        if (fileData.isComplete()) {
+            fileData.checkComplete();
         }
     }
 
@@ -358,9 +419,8 @@ class FileTransferApp {
         this.fileChunks[fileId] = {
             fileName: fileName,
             fileSize: fileSize,
-            totalChunks: totalChunks,
-            chunks: new Array(totalChunks),
-            receivedChunks: 0
+            chunks: {},
+            receivedChunks: new Set()
         };
 
         this.renderIncomingFile(fileId, fileName, fileSize);
@@ -407,26 +467,54 @@ class FileTransferApp {
     }
 
     receiveFileChunk(data) {
-        const { fileId, chunk, chunkIndex, fileSize } = data;
+        const { fileId, chunk, chunkIndex, fileSize, fileName, totalChunks } = data;
 
         if (!this.fileChunks[fileId]) {
             this.fileChunks[fileId] = {
                 fileSize: fileSize || 0,
+                fileName: fileName || '',
                 chunks: {},
-                receivedChunks: new Set()
+                receivedChunks: new Set(),
+                lastAckTime: 0,
+                pendingAcks: new Set()
             };
         }
 
         const fileData = this.fileChunks[fileId];
+
+        if (fileData.chunks[chunkIndex]) {
+            return;
+        }
+
         fileData.chunks[chunkIndex] = chunk;
         fileData.receivedChunks.add(chunkIndex);
+        fileData.pendingAcks.add(chunkIndex);
 
         const receivedCount = fileData.receivedChunks.size;
-        const totalChunks = Object.keys(fileData.chunks).length;
         const progress = Math.round((receivedCount / totalChunks) * 100);
         const bytesReceived = Math.min(receivedCount * this.CHUNK_SIZE, fileData.fileSize);
 
         this.updateProgress(fileId, progress, bytesReceived);
+
+        const now = Date.now();
+        if (now - fileData.lastAckTime > 50 || fileData.pendingAcks.size >= 8) {
+            this.sendBatchAck(fileId);
+        }
+    }
+
+    sendBatchAck(fileId) {
+        const fileData = this.fileChunks[fileId];
+        if (!fileData || fileData.pendingAcks.size === 0) return;
+
+        const acks = Array.from(fileData.pendingAcks);
+        fileData.pendingAcks.clear();
+        fileData.lastAckTime = Date.now();
+
+        this.conn.send({
+            type: 'chunk-ack',
+            fileId: fileId,
+            chunkIndices: acks
+        });
     }
 
     processReceivedChunk(fileId, chunkIndex) {
@@ -464,43 +552,24 @@ class FileTransferApp {
     completeFileReceive(data) {
         const fileId = data.fileId;
         const fileSize = data.fileSize;
-        const fileName = data.fileName;
-
-        if (!this.fileChunks[fileId]) {
-            this.fileChunks[fileId] = {
-                fileName: fileName,
-                fileSize: fileSize,
-                chunks: {},
-                receivedChunks: new Set()
-            };
-        }
-
         const fileData = this.fileChunks[fileId];
-        fileData.fileSize = fileSize;
-        fileData.fileName = fileName || fileData.fileName;
 
-        const checkAndProcess = () => {
+        if (!fileData) return;
+
+        fileData.fileSize = fileSize;
+
+        const checkAndDownload = () => {
             const totalChunks = Math.ceil(fileSize / this.CHUNK_SIZE);
             const receivedCount = fileData.receivedChunks.size;
 
             if (receivedCount >= totalChunks) {
                 this.processReceivedChunk(fileId, 0);
             } else {
-                setTimeout(() => {
-                    const fileData2 = this.fileChunks[fileId];
-                    if (fileData2) {
-                        const newReceivedCount = fileData2.receivedChunks.size;
-                        if (newReceivedCount >= totalChunks) {
-                            this.processReceivedChunk(fileId, 0);
-                        } else {
-                            this.showToast('等待文件传输完成...', '');
-                        }
-                    }
-                }, 500);
+                setTimeout(checkAndDownload, 100);
             }
         };
 
-        checkAndProcess();
+        checkAndDownload();
     }
 
     addProgressItem(fileId, fileName, fileSize) {
