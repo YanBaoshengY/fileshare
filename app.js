@@ -514,10 +514,16 @@ class FileTransferApp {
 
     broadcast(data) {
         console.log('[Broadcast] 发送消息:', data.type, '到', this.connections.length, '个连接');
-        this.connections.forEach(conn => {
-            console.log('[Broadcast] 连接状态:', conn.peer, 'open:', conn.open);
-            if (conn.open) {
+
+        const otherDeviceIds = Object.keys(this.devices).filter(id => id !== this.peerId);
+        const openConnections = this.connections.filter(c => c.open);
+
+        otherDeviceIds.forEach(deviceId => {
+            const conn = openConnections.find(c => c.peer === deviceId);
+            if (conn) {
                 conn.send(data);
+            } else {
+                this.connectAndSend(deviceId, data);
             }
         });
         console.log('[Broadcast] 当前 connections 数组:', this.connections.map(c => c.peer));
@@ -535,12 +541,40 @@ class FileTransferApp {
         if (targets.size === 0) {
             return false;
         }
-        this.connections.forEach(conn => {
-            if (conn.open && targets.has(conn.peer)) {
+
+        let sentCount = 0;
+        targets.forEach(deviceId => {
+            let conn = this.connections.find(c => c.peer === deviceId && c.open);
+
+            if (conn) {
                 conn.send(data);
+                sentCount++;
+            } else {
+                this.connectAndSend(deviceId, data);
             }
         });
-        return true;
+
+        return sentCount > 0;
+    }
+
+    connectAndSend(deviceId, data) {
+        if (this.peer && deviceId !== this.peerId) {
+            const conn = this.peer.connect(deviceId, {
+                reliable: true,
+                metadata: { nickname: this.nickname }
+            });
+
+            this.connections.push(conn);
+
+            conn.on('open', () => {
+                conn.send(data);
+                this.showToast('连接已建立', 'success');
+            });
+
+            conn.on('error', (err) => {
+                console.error('连接错误:', err);
+            });
+        }
     }
 
     onPeerConnected(deviceId) {
@@ -761,7 +795,7 @@ class FileTransferApp {
 
     addMessage(content, sender, type, time) {
         const msgObj = { content, sender, type, time };
-        this.messages.unshift(msgObj);
+        this.messages.push(msgObj);
         this.renderMessages();
     }
 
@@ -771,7 +805,7 @@ class FileTransferApp {
             return;
         }
 
-        this.elements.messagesList.innerHTML = this.messages.map(msg => `
+        this.elements.messagesList.innerHTML = [...this.messages].reverse().map(msg => `
             <div class="message-item ${msg.type}">
                 <div class="message-sender">${msg.sender} · ${msg.time}</div>
                 <div class="message-content">${this.escapeHtml(msg.content)}</div>
