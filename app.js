@@ -14,6 +14,8 @@ class FileTransferApp {
         this.fileChunks = {};
         this.CHUNK_SIZE = 16 * 1024;
         this.isHost = false;
+        this.selectedFileTargets = new Set();
+        this.selectedMessageTargets = new Set();
 
         this.initElements();
         this.initEventListeners();
@@ -32,6 +34,14 @@ class FileTransferApp {
             roomIdInput: document.getElementById('roomIdInput'),
             devicesList: document.getElementById('devicesList'),
             devicesListContent: document.getElementById('devicesListContent'),
+            fileTargetRoom: document.querySelector('input[name="fileTarget"][value="room"]'),
+            fileTargetSpecific: document.querySelector('input[name="fileTarget"][value="specific"]'),
+            fileTargetDevices: document.getElementById('fileTargetDevices'),
+            fileTargetDevicesList: document.getElementById('fileTargetDevicesList'),
+            messageTargetRoom: document.querySelector('input[name="messageTarget"][value="room"]'),
+            messageTargetSpecific: document.querySelector('input[name="messageTarget"][value="specific"]'),
+            messageTargetDevices: document.getElementById('messageTargetDevices'),
+            messageTargetDevicesList: document.getElementById('messageTargetDevicesList'),
             dropZone: document.getElementById('dropZone'),
             fileInput: document.getElementById('fileInput'),
             fileList: document.getElementById('fileList'),
@@ -54,6 +64,27 @@ class FileTransferApp {
         this.elements.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
         this.elements.sendFilesBtn.addEventListener('click', () => this.sendFiles());
         this.elements.sendMessageBtn.addEventListener('click', () => this.sendMessage());
+
+        if (this.elements.fileTargetRoom) {
+            this.elements.fileTargetRoom.addEventListener('change', () => {
+                this.onFileTargetChange();
+            });
+        }
+        if (this.elements.fileTargetSpecific) {
+            this.elements.fileTargetSpecific.addEventListener('change', () => {
+                this.onFileTargetChange();
+            });
+        }
+        if (this.elements.messageTargetRoom) {
+            this.elements.messageTargetRoom.addEventListener('change', () => {
+                this.onMessageTargetChange();
+            });
+        }
+        if (this.elements.messageTargetSpecific) {
+            this.elements.messageTargetSpecific.addEventListener('change', () => {
+                this.onMessageTargetChange();
+            });
+        }
 
         this.elements.dropZone.addEventListener('click', () => {
             this.elements.fileInput.click();
@@ -97,6 +128,72 @@ class FileTransferApp {
         if (this.nickname) {
             this.elements.nicknameInput.value = this.nickname;
         }
+    }
+
+    onFileTargetChange() {
+        if (this.elements.fileTargetSpecific && this.elements.fileTargetSpecific.checked) {
+            this.elements.fileTargetDevices.classList.remove('hidden');
+            this.renderTargetDevicesList('file');
+        } else {
+            this.elements.fileTargetDevices.classList.add('hidden');
+            this.selectedFileTargets.clear();
+        }
+    }
+
+    onMessageTargetChange() {
+        if (this.elements.messageTargetSpecific && this.elements.messageTargetSpecific.checked) {
+            this.elements.messageTargetDevices.classList.remove('hidden');
+            this.renderTargetDevicesList('message');
+        } else {
+            this.elements.messageTargetDevices.classList.add('hidden');
+            this.selectedMessageTargets.clear();
+        }
+    }
+
+    renderTargetDevicesList(type) {
+        const deviceList = type === 'file' ? this.elements.fileTargetDevicesList : this.elements.messageTargetDevicesList;
+        const selectedTargets = type === 'file' ? this.selectedFileTargets : this.selectedMessageTargets;
+
+        const deviceIds = Object.keys(this.devices).filter(id => id !== this.peerId);
+
+        if (deviceIds.length === 0) {
+            deviceList.innerHTML = '<div class="empty-tip">暂无可选择的设备</div>';
+            return;
+        }
+
+        const icons = ['💻', '📱', '📱', '📱', '📱', '💻', '📱', '💻'];
+
+        deviceList.innerHTML = deviceIds.map((id, index) => {
+            const device = this.devices[id];
+            const icon = device.nickname.includes('手机') ? '📱' :
+                         device.nickname.includes('电脑') ? '💻' :
+                         icons[index % icons.length];
+            const isSelected = selectedTargets.has(id);
+
+            return `
+                <div class="target-device-item ${isSelected ? 'selected' : ''}" data-device-id="${id}">
+                    <input type="checkbox" ${isSelected ? 'checked' : ''}>
+                    <span class="target-device-checkbox"></span>
+                    <span class="target-device-icon">${icon}</span>
+                    <span class="target-device-name">${device.nickname}</span>
+                </div>
+            `;
+        }).join('');
+
+        deviceList.querySelectorAll('.target-device-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const deviceId = item.dataset.deviceId;
+                if (selectedTargets.has(deviceId)) {
+                    selectedTargets.delete(deviceId);
+                    item.classList.remove('selected');
+                    item.querySelector('input').checked = false;
+                } else {
+                    selectedTargets.add(deviceId);
+                    item.classList.add('selected');
+                    item.querySelector('input').checked = true;
+                }
+            });
+        });
     }
 
     generateRoomId() {
@@ -155,6 +252,7 @@ class FileTransferApp {
             joinedAt: Date.now()
         };
         this.renderDevicesList();
+        this.refreshTargetDeviceLists();
         this.showToast(`${nickname} 加入了房间`, 'success');
     }
 
@@ -163,6 +261,7 @@ class FileTransferApp {
             const nickname = this.devices[deviceId].nickname;
             delete this.devices[deviceId];
             this.renderDevicesList();
+            this.refreshTargetDeviceLists();
             this.showToast(`${nickname} 已离开`, 'success');
         }
 
@@ -173,6 +272,18 @@ class FileTransferApp {
         } else {
             const count = Object.keys(this.devices).length - 1;
             this.updateConnectionStatus('connected', `${count} 个设备已连接`);
+        }
+    }
+
+    refreshTargetDeviceLists() {
+        const isFileTargetExpanded = this.elements.fileTargetSpecific && this.elements.fileTargetSpecific.checked;
+        const isMessageTargetExpanded = this.elements.messageTargetSpecific && this.elements.messageTargetSpecific.checked;
+
+        if (isFileTargetExpanded) {
+            this.renderTargetDevicesList('file');
+        }
+        if (isMessageTargetExpanded) {
+            this.renderTargetDevicesList('message');
         }
     }
 
@@ -341,6 +452,18 @@ class FileTransferApp {
         });
     }
 
+    sendToTargets(targets, data) {
+        if (targets.size === 0) {
+            return false;
+        }
+        this.connections.forEach(conn => {
+            if (conn.open && targets.has(conn.peer)) {
+                conn.send(data);
+            }
+        });
+        return true;
+    }
+
     onPeerConnected(deviceId) {
         const count = this.connections.length;
         this.updateConnectionStatus('connected', `${count} 个设备已连接`);
@@ -419,23 +542,30 @@ class FileTransferApp {
             return;
         }
 
+        const isSpecificTarget = this.elements.fileTargetSpecific && this.elements.fileTargetSpecific.checked;
+        if (isSpecificTarget && this.selectedFileTargets.size === 0) {
+            this.showToast('请选择接收设备', 'error');
+            return;
+        }
+
         this.elements.progressList.innerHTML = '';
         this.fileChunks = {};
 
         this.filesToSend.forEach(file => {
-            this.sendFile(file);
+            this.sendFile(file, isSpecificTarget ? this.selectedFileTargets : null);
         });
 
         this.filesToSend = [];
         this.renderFileList();
     }
 
-    sendFile(file) {
+    sendFile(file, targets = null) {
         const fileId = Date.now().toString(36) + Math.random().toString(36).substr(2);
         const fileSize = file.size;
         const totalChunks = Math.ceil(fileSize / this.CHUNK_SIZE);
+        const sendMethod = targets ? (data) => this.sendToTargets(targets, data) : (data) => this.broadcast(data);
 
-        this.broadcast({
+        sendMethod({
             type: 'file-meta',
             fileId: fileId,
             fileName: file.name,
@@ -451,7 +581,7 @@ class FileTransferApp {
 
         const sendNext = () => {
             if (currentChunk >= totalChunks) {
-                this.broadcast({
+                sendMethod({
                     type: 'file-complete',
                     fileId: fileId,
                     fileSize: fileSize
@@ -469,7 +599,7 @@ class FileTransferApp {
 
             if (chunkData.size === 0) {
                 currentChunk = totalChunks;
-                this.broadcast({
+                sendMethod({
                     type: 'file-complete',
                     fileId: fileId,
                     fileSize: fileSize
@@ -477,7 +607,7 @@ class FileTransferApp {
                 return;
             }
 
-            this.broadcast({
+            sendMethod({
                 type: 'file-chunk',
                 fileId: fileId,
                 chunk: chunkData,
@@ -498,7 +628,7 @@ class FileTransferApp {
             if (currentChunk < totalChunks) {
                 setTimeout(sendNext, 5);
             } else {
-                this.conn.send({
+                sendMethod({
                     type: 'file-complete',
                     fileId: fileId,
                     fileSize: fileSize
@@ -525,12 +655,24 @@ class FileTransferApp {
             return;
         }
 
-        this.broadcast({
+        const isSpecificTarget = this.elements.messageTargetSpecific && this.elements.messageTargetSpecific.checked;
+        if (isSpecificTarget && this.selectedMessageTargets.size === 0) {
+            this.showToast('请选择接收设备', 'error');
+            return;
+        }
+
+        const messageData = {
             type: 'message',
             content: message,
             senderName: this.nickname || '我',
             time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-        });
+        };
+
+        if (isSpecificTarget) {
+            this.sendToTargets(this.selectedMessageTargets, messageData);
+        } else {
+            this.broadcast(messageData);
+        }
 
         this.addMessage(message, this.nickname || '我', 'sent', '刚刚');
         this.elements.messageInput.value = '';

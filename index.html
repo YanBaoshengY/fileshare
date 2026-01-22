@@ -22,6 +22,25 @@
     <div class="container">
         <div class="section">
             <div class="section-title">文件</div>
+            <div class="send-target-selector">
+                <div class="target-label">发送给：</div>
+                <div class="target-options">
+                    <label class="target-option">
+                        <input type="radio" name="fileTarget" value="room" checked>
+                        <span class="target-radio"></span>
+                        <span class="target-text">全房间</span>
+                    </label>
+                    <label class="target-option">
+                        <input type="radio" name="fileTarget" value="specific">
+                        <span class="target-radio"></span>
+                        <span class="target-text">选择设备</span>
+                    </label>
+                </div>
+                <div id="fileTargetDevices" class="target-devices hidden">
+                    <div class="target-devices-title">选择接收设备</div>
+                    <div id="fileTargetDevicesList" class="target-devices-list"></div>
+                </div>
+            </div>
             <div class="file-drop-zone" id="dropZone">
                 <div class="icon">📁</div>
                 <div class="text">松开发送文件</div>
@@ -51,6 +70,25 @@
 
         <div class="section messages-area">
             <div class="section-title">消息</div>
+            <div class="send-target-selector">
+                <div class="target-label">发送给：</div>
+                <div class="target-options">
+                    <label class="target-option">
+                        <input type="radio" name="messageTarget" value="room" checked>
+                        <span class="target-radio"></span>
+                        <span class="target-text">全房间</span>
+                    </label>
+                    <label class="target-option">
+                        <input type="radio" name="messageTarget" value="specific">
+                        <span class="target-radio"></span>
+                        <span class="target-text">选择设备</span>
+                    </label>
+                </div>
+                <div id="messageTargetDevices" class="target-devices hidden">
+                    <div class="target-devices-title">选择接收设备</div>
+                    <div id="messageTargetDevicesList" class="target-devices-list"></div>
+                </div>
+            </div>
             <div id="messagesList" class="messages-list">
                 <div class="empty-tip">暂无消息</div>
             </div>
