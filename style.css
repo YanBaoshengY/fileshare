@@ -21,6 +21,8 @@ body {
 header {
     text-align: center;
     margin-bottom: 30px;
+    position: relative;
+    z-index: 10;
 }
 
 header h1 {
@@ -178,12 +180,16 @@ header .user-count {
 }
 
 .tab-content {
-    display: none;
+    display: none !important;
     animation: fadeIn 0.3s ease;
+    position: relative !important;
+    z-index: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
 }
 
 .tab-content.active {
-    display: block;
+    display: block !important;
 }
 
 @keyframes fadeIn {

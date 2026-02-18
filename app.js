@@ -33,7 +33,7 @@ class FileTransferApp {
             connectionStatus: document.getElementById('connectionStatus'),
             joinForm: document.getElementById('joinForm'),
             roomIdInput: document.getElementById('roomIdInput'),
-            devicesList: document.getElementById('devicesListContent'),
+            devicesList: document.getElementById('devicesList'),
             devicesListContent: document.getElementById('devicesListContent'),
             peerNickname: document.getElementById('peerNickname'),
             fileTargetRoom: document.querySelector('input[name="fileTarget"][value="room"]'),
