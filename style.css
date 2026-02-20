@@ -346,6 +346,21 @@ header .user-count {
     flex: 1;
 }
 
+.room-actions-secondary {
+    margin-top: 8px;
+    margin-bottom: 0;
+}
+
+.btn-danger {
+    background: rgba(255, 82, 82, 0.2);
+    color: #ff5252;
+    border: 1px solid rgba(255, 82, 82, 0.3);
+}
+
+.btn-danger:hover {
+    background: rgba(255, 82, 82, 0.3);
+}
+
 .room-section {
     text-align: center;
 }
@@ -388,6 +403,10 @@ header .user-count {
 
 .room-display .status.connected {
     color: #34c759;
+}
+
+.room-display .status.disconnected {
+    color: #ff5252;
 }
 
 .devices-section {
