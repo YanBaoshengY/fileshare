@@ -308,6 +308,9 @@ class FileTransferApp {
             return;
         }
 
+        const oldRoomId = this.roomId;
+        const oldIsHost = this.isHost;
+
         this.connections.forEach(conn => {
             if (conn.open) {
                 conn.close();
@@ -322,10 +325,14 @@ class FileTransferApp {
         };
         this.renderDevicesList();
 
-        if (this.isHost) {
+        if (oldIsHost) {
+            this.roomId = oldRoomId;
+            this.isHost = true;
             this.updateConnectionStatus('waiting', '等待连接');
             this.initPeer(this.roomId);
         } else {
+            this.roomId = oldRoomId;
+            this.isHost = false;
             this.updateConnectionStatus('waiting', '正在重新连接...');
             this.initPeer();
         }
@@ -440,6 +447,14 @@ class FileTransferApp {
             this.renderDevicesList();
             this.refreshTargetDeviceLists();
             this.showToast(`${nickname} 已离开`, 'success');
+            
+            if (this.isHost) {
+                this.broadcast({
+                    type: 'device-left',
+                    deviceId: deviceId,
+                    nickname: nickname
+                });
+            }
         }
 
         this.connections = this.connections.filter(c => c.peer !== deviceId);
@@ -465,7 +480,7 @@ class FileTransferApp {
     }
 
     renderDevicesList() {
-        const deviceIds = Object.keys(this.devices).filter(id => id !== this.peerId);
+        const deviceIds = Object.keys(this.devices).filter(id => id !== this.peerId && id !== this.roomId);
         
         if (deviceIds.length === 0) {
             this.elements.devicesList.classList.add('hidden');
@@ -1051,6 +1066,20 @@ class FileTransferApp {
             }
         } else if (data.type === 'new-device') {
             this.handleNewDevice(data);
+        } else if (data.type === 'device-left') {
+            if (this.devices[data.deviceId]) {
+                delete this.devices[data.deviceId];
+                this.renderDevicesList();
+                this.refreshTargetDeviceLists();
+                this.showToast(`${data.nickname} 已离开`, 'success');
+            }
+            this.connections = this.connections.filter(c => c.peer !== data.deviceId);
+            const otherDevicesCount = Object.keys(this.devices).length - 1;
+            if (otherDevicesCount <= 0) {
+                this.updateConnectionStatus('waiting', '等待连接');
+            } else {
+                this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
+            }
         } else if (data.type === 'file-meta') {
             this.receiveFileMeta(data);
         } else if (data.type === 'file-chunk') {
@@ -1143,6 +1172,12 @@ class FileTransferApp {
             conn.on('close', () => {
                 this.pendingConnections.delete(conn.peer);
                 this.removeDevice(conn.peer);
+                const openConnections = this.connections.filter(c => c.open && c.peer !== conn.peer);
+                if (openConnections.length === 0) {
+                    this.stopHeartbeat();
+                    this.updateConnectionStatus('disconnected', '连接断开');
+                    this.elements.reconnectBtn.classList.remove('hidden');
+                }
             });
 
             conn.on('error', (err) => {
