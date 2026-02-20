@@ -27,7 +27,7 @@ class FileTransferApp {
             nicknameInput: document.getElementById('nicknameInput'),
             createRoomBtn: document.getElementById('createRoomBtn'),
             joinRoomBtn: document.getElementById('joinRoomBtn'),
-            reconnectBtn: document.getElementById('reconnectBtn'),
+
             disconnectBtn: document.getElementById('disconnectBtn'),
             confirmJoinBtn: document.getElementById('confirmJoinBtn'),
             roomDisplay: document.getElementById('roomDisplay'),
@@ -63,7 +63,6 @@ class FileTransferApp {
         this.elements.createRoomBtn.addEventListener('click', () => this.createRoom());
         this.elements.joinRoomBtn.addEventListener('click', () => this.showJoinForm());
         this.elements.confirmJoinBtn.addEventListener('click', () => this.joinRoom());
-        this.elements.reconnectBtn.addEventListener('click', () => this.reconnect());
         this.elements.disconnectBtn.addEventListener('click', () => this.disconnect());
         this.elements.roomIdInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.joinRoom();
@@ -260,7 +259,6 @@ class FileTransferApp {
         this.elements.roomDisplay.classList.add('show');
         this.elements.createRoomBtn.classList.add('hidden');
         this.elements.joinRoomBtn.classList.add('hidden');
-        this.elements.reconnectBtn.classList.remove('hidden');
         this.elements.disconnectBtn.classList.remove('hidden');
 
         this.updateConnectionStatus('waiting', '等待连接');
@@ -286,7 +284,6 @@ class FileTransferApp {
         this.elements.joinForm.classList.remove('show');
         this.elements.createRoomBtn.classList.add('hidden');
         this.elements.joinRoomBtn.classList.add('hidden');
-        this.elements.reconnectBtn.classList.remove('hidden');
         this.elements.disconnectBtn.classList.remove('hidden');
 
         this.updateConnectionStatus('waiting', '正在连接...');
@@ -300,43 +297,6 @@ class FileTransferApp {
             joinedAt: Date.now()
         };
         this.renderDevicesList();
-    }
-
-    reconnect() {
-        if (!this.roomId) {
-            this.showToast('请先创建或加入房间', 'error');
-            return;
-        }
-
-        const oldRoomId = this.roomId;
-        const oldIsHost = this.isHost;
-        const otherDevices = Object.keys(this.devices).filter(id => id !== this.peerId && id !== this.roomId);
-
-        this.connections.forEach(conn => {
-            if (conn.open) {
-                conn.close();
-            }
-        });
-        this.connections = [];
-        this.devices = {};
-        this.devices[this.peerId] = {
-            id: this.peerId,
-            nickname: this.nickname,
-            joinedAt: Date.now()
-        };
-        this.renderDevicesList();
-
-        this.roomId = oldRoomId;
-        this.isHost = oldIsHost;
-
-        if (oldIsHost) {
-            this.updateConnectionStatus('waiting', '等待连接');
-            this.initPeer(this.roomId);
-        } else {
-            this.updateConnectionStatus('waiting', '正在重新连接...');
-            this.initPeer();
-        }
-        this.showToast('正在重新连接...', 'success');
     }
 
     disconnect() {
@@ -364,7 +324,6 @@ class FileTransferApp {
         this.elements.roomDisplay.classList.remove('show');
         this.elements.createRoomBtn.classList.remove('hidden');
         this.elements.joinRoomBtn.classList.remove('hidden');
-        this.elements.reconnectBtn.classList.add('hidden');
         this.elements.disconnectBtn.classList.add('hidden');
         this.elements.joinForm.classList.remove('show');
 
@@ -441,7 +400,7 @@ class FileTransferApp {
     }
 
     removeDevice(deviceId) {
-        if (deviceId !== this.peerId && this.devices[deviceId]) {
+        if (this.devices[deviceId]) {
             const nickname = this.devices[deviceId].nickname;
             delete this.devices[deviceId];
             this.renderDevicesList();
@@ -459,7 +418,7 @@ class FileTransferApp {
 
         this.connections = this.connections.filter(c => c.peer !== deviceId);
 
-        const otherDevicesCount = Object.keys(this.devices).filter(id => id !== this.peerId && id !== this.roomId).length;
+        const otherDevicesCount = Object.keys(this.devices).length - 1;
         if (otherDevicesCount <= 0) {
             this.updateConnectionStatus('waiting', '等待连接');
         } else {
@@ -480,7 +439,11 @@ class FileTransferApp {
     }
 
     renderDevicesList() {
-        const deviceIds = Object.keys(this.devices).filter(id => id !== this.peerId && id !== this.roomId);
+        let deviceIds = Object.keys(this.devices).filter(id => id !== this.peerId);
+        
+        if (this.isHost) {
+            deviceIds = deviceIds.filter(id => id !== this.roomId);
+        }
         
         if (deviceIds.length === 0) {
             this.elements.devicesList.classList.add('hidden');
@@ -710,7 +673,6 @@ class FileTransferApp {
             if (openConnections.length === 0) {
                 this.stopHeartbeat();
                 this.updateConnectionStatus('disconnected', '连接断开');
-                this.elements.reconnectBtn.classList.remove('hidden');
             }
         });
 
@@ -1067,14 +1029,14 @@ class FileTransferApp {
         } else if (data.type === 'new-device') {
             this.handleNewDevice(data);
         } else if (data.type === 'device-left') {
-            if (data.deviceId !== this.peerId && this.devices[data.deviceId]) {
+            if (this.devices[data.deviceId]) {
                 delete this.devices[data.deviceId];
                 this.renderDevicesList();
                 this.refreshTargetDeviceLists();
                 this.showToast(`${data.nickname} 已离开`, 'success');
             }
             this.connections = this.connections.filter(c => c.peer !== data.deviceId);
-            const otherDevicesCount = Object.keys(this.devices).filter(id => id !== this.peerId && id !== this.roomId).length;
+            const otherDevicesCount = Object.keys(this.devices).length - 1;
             if (otherDevicesCount <= 0) {
                 this.updateConnectionStatus('waiting', '等待连接');
             } else {
@@ -1176,7 +1138,6 @@ class FileTransferApp {
                 if (openConnections.length === 0) {
                     this.stopHeartbeat();
                     this.updateConnectionStatus('disconnected', '连接断开');
-                    this.elements.reconnectBtn.classList.remove('hidden');
                 }
             });
 
