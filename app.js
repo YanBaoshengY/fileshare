@@ -880,6 +880,12 @@ class FileTransferApp {
 
         const sendNext = () => {
             if (this.fileChunks[fileId] && this.fileChunks[fileId].cancelled) {
+                sendMethod({
+                    type: 'file-cancelled',
+                    fileId: fileId,
+                    fileName: file.name
+                });
+                
                 const progressItem = document.getElementById('progress-item-' + fileId);
                 if (progressItem) {
                     progressItem.remove();
@@ -1061,6 +1067,8 @@ class FileTransferApp {
             this.receiveFileChunk(data);
         } else if (data.type === 'file-complete') {
             this.completeFileReceive(data);
+        } else if (data.type === 'file-cancelled') {
+            this.handleFileCancelled(data);
         } else if (data.type === 'message') {
             this.receiveMessage(data);
         }
@@ -1183,7 +1191,8 @@ class FileTransferApp {
             totalChunks: totalChunks,
             chunks: {},
             receivedChunks: 0,
-            autoStart: true
+            autoStart: true,
+            cancelled: false
         };
 
         this.addProgressItem(fileId, fileName, fileSize);
@@ -1241,6 +1250,20 @@ class FileTransferApp {
                 }, 200);
             }
         }, 300);
+    }
+
+    handleFileCancelled(data) {
+        const { fileId, fileName } = data;
+        
+        if (this.fileChunks[fileId]) {
+            const progressItem = document.getElementById('progress-item-' + fileId);
+            if (progressItem) {
+                progressItem.remove();
+            }
+            delete this.fileChunks[fileId];
+        }
+        
+        this.showToast(`${fileName} 已取消发送`, 'error');
     }
 
     processReceivedChunk(fileId, chunkIndex) {
