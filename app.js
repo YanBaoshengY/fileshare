@@ -571,6 +571,7 @@ class FileTransferApp {
         });
 
         conn.on('data', (data) => {
+            console.log('收到数据 (conn.on data):', data.type, data);
             if (data.type === 'nickname') {
                 this.pendingConnections.delete(conn.peer);
 
@@ -644,30 +645,22 @@ class FileTransferApp {
 
     broadcast(data) {
         const openConnections = this.connections.filter(c => c.open);
+        console.log('广播消息:', data.type, '连接数:', openConnections.length, '设备数:', Object.keys(this.devices).length);
+        console.log('我的peerId:', this.peerId, '所有设备:', Object.keys(this.devices));
 
-        if (this.isHost) {
-            Object.keys(this.devices).forEach(deviceId => {
-                if (deviceId !== this.peerId) {
-                    const conn = openConnections.find(c => c.peer === deviceId);
-                    if (conn) {
-                        conn.send(data);
-                    } else {
-                        this.connectAndSend(deviceId, data);
-                    }
+        Object.keys(this.devices).forEach(deviceId => {
+            if (deviceId !== this.peerId) {
+                const conn = openConnections.find(c => c.peer === deviceId);
+                console.log('发送给:', deviceId, '找到连接:', !!conn, '连接详情:', conn ? conn.peer : null);
+                if (conn) {
+                    conn.send(data);
+                    console.log('已发送');
+                } else {
+                    console.log('未找到连接，尝试新建连接');
+                    this.connectAndSend(deviceId, data);
                 }
-            });
-        } else {
-            Object.keys(this.devices).forEach(deviceId => {
-                if (deviceId !== this.peerId) {
-                    const conn = openConnections.find(c => c.peer === deviceId);
-                    if (conn) {
-                        conn.send(data);
-                    } else {
-                        this.connectAndSend(deviceId, data);
-                    }
-                }
-            });
-        }
+            }
+        });
     }
 
     broadcastExcept(excludePeerId, data) {
@@ -906,6 +899,8 @@ class FileTransferApp {
             return;
         }
 
+        console.log('发送消息 - 连接数:', this.connections.length, '打开的连接:', this.connections.filter(c => c.open).length);
+
         if (this.connections.length === 0 || !this.connections.some(c => c.open)) {
             this.showToast('未连接', 'error');
             return;
@@ -924,6 +919,8 @@ class FileTransferApp {
             time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
         };
 
+        console.log('发送消息数据:', messageData);
+        
         if (isSpecificTarget) {
             this.sendToTargets(this.selectedMessageTargets, messageData);
         } else {
@@ -967,6 +964,7 @@ class FileTransferApp {
     }
 
     handleData(data, conn = null) {
+        console.log('handleData 收到:', data.type, data, 'conn:', conn ? conn.peer : null);
         if (data.type === 'heartbeat') {
             return;
         } else if (data.type === 'devices-list') {
@@ -1050,6 +1048,7 @@ class FileTransferApp {
             });
 
             conn.on('data', (data) => {
+                console.log('收到数据 (conn.on data 2):', data.type, data);
                 if (data.type === 'nickname') {
                     this.pendingConnections.delete(conn.peer);
                     const isNewDevice = !this.devices[conn.peer];
@@ -1141,9 +1140,12 @@ class FileTransferApp {
     }
 
     receiveMessage(data) {
+        console.log('收到消息:', data);
         const { content, senderName, time } = data;
         this.peerNickname = senderName;
-        this.elements.peerNickname.textContent = senderName;
+        if (this.elements.peerNickname) {
+            this.elements.peerNickname.textContent = senderName;
+        }
         this.addMessage(content, senderName, 'received', time);
     }
 
