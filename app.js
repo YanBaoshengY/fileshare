@@ -1284,17 +1284,9 @@ class FileTransferApp {
         }
 
         const blob = new Blob(chunks, { type: 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = fileData.fileName;
-        link.click();
-
-        URL.revokeObjectURL(url);
-
+        
         this.updateProgress(fileId, 100, fileData.fileSize, '已下载');
-        this.addToHistory('received', fileData.fileName, fileData.fileSize);
+        this.addToHistory('received', fileData.fileName, fileData.fileSize, blob);
         this.showToast(`已下载: ${fileData.fileName}`, 'success');
 
         delete this.fileChunks[fileId];
@@ -1398,17 +1390,18 @@ class FileTransferApp {
         }
     }
 
-    addToHistory(type, fileName, fileSize) {
+    addToHistory(type, fileName, fileSize, fileData = null) {
         const historyItem = {
             type: type,
             fileName: fileName,
             fileSize: fileSize,
-            time: new Date().toLocaleString('zh-CN')
+            time: new Date().toLocaleString('zh-CN'),
+            fileData: fileData
         };
 
         this.transferHistory.unshift(historyItem);
         if (this.transferHistory.length > 20) {
-            this.transferHistory.pop();
+            this.transferHistory.shift();
         }
 
         this.renderHistory();
@@ -1420,8 +1413,8 @@ class FileTransferApp {
             return;
         }
 
-        this.elements.transferHistory.innerHTML = this.transferHistory.map(item => `
-            <div class="history-item">
+        this.elements.transferHistory.innerHTML = this.transferHistory.map((item, index) => `
+            <div class="history-item" onclick="app.viewHistoryFile(${index})">
                 <div class="history-info">
                     <span class="history-type ${item.type}">${item.type === 'sent' ? '发送' : '接收'}</span>
                     <span class="history-name" title="${item.fileName}">${item.fileName}</span>
@@ -1429,6 +1422,23 @@ class FileTransferApp {
                 <span class="history-size">${this.formatFileSize(item.fileSize)}</span>
             </div>
         `).join('');
+    }
+
+    viewHistoryFile(index) {
+        const item = this.transferHistory[index];
+        if (!item) return;
+        
+        if (item.type === 'received' && item.fileData) {
+            const url = URL.createObjectURL(item.fileData);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = item.fileName;
+            link.click();
+            URL.revokeObjectURL(url);
+            this.showToast(`正在打开: ${item.fileName}`, 'success');
+        } else if (item.type === 'sent') {
+            this.showToast('发送的文件无法从历史记录打开', 'error');
+        }
     }
 
     getFileIcon(fileName) {
