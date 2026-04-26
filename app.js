@@ -9,6 +9,7 @@ class FileTransferApp {
         this.nickname = localStorage.getItem('nickname') || '匿名';
         this.filesToSend = [];
         this.receivedFiles = [];
+        this.receivedFileBlobs = {};
         this.transferHistory = [];
         this.messages = [];
         this.fileChunks = {};
@@ -20,6 +21,7 @@ class FileTransferApp {
         this.initElements();
         this.initEventListeners();
         this.loadNickname();
+        this.renderReceivedFiles(); // 初始化接收文件列表
     }
 
     initElements() {
@@ -27,13 +29,13 @@ class FileTransferApp {
             nicknameInput: document.getElementById('nicknameInput'),
             createRoomBtn: document.getElementById('createRoomBtn'),
             joinRoomBtn: document.getElementById('joinRoomBtn'),
-
+            cancelJoinBtn: document.getElementById('cancelJoinBtn'),
             disconnectBtn: document.getElementById('disconnectBtn'),
             confirmJoinBtn: document.getElementById('confirmJoinBtn'),
             roomDisplay: document.getElementById('roomDisplay'),
+            joinInputDisplay: document.getElementById('joinInputDisplay'),
             roomId: document.getElementById('roomId'),
             connectionStatus: document.getElementById('connectionStatus'),
-            joinForm: document.getElementById('joinForm'),
             roomIdInput: document.getElementById('roomIdInput'),
             devicesList: document.getElementById('devicesList'),
             devicesListContent: document.getElementById('devicesListContent'),
@@ -56,6 +58,7 @@ class FileTransferApp {
             messagesList: document.getElementById('messagesList'),
             progressList: document.getElementById('progressList'),
             transferHistory: document.getElementById('transferHistory'),
+            receivedFilesList: document.getElementById('receivedFilesList'),
             toast: document.getElementById('toast')
         };
     }
@@ -64,6 +67,7 @@ class FileTransferApp {
         this.elements.createRoomBtn.addEventListener('click', () => this.createRoom());
         this.elements.joinRoomBtn.addEventListener('click', () => this.showJoinForm());
         this.elements.confirmJoinBtn.addEventListener('click', () => this.joinRoom());
+        this.elements.cancelJoinBtn.addEventListener('click', () => this.cancelJoin());
         this.elements.disconnectBtn.addEventListener('click', () => this.disconnect());
         this.elements.roomIdInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.joinRoom();
@@ -151,13 +155,6 @@ class FileTransferApp {
                 this.switchTab(tabName);
             });
         });
-
-        const startBtn = document.getElementById('startBtn');
-        if (startBtn) {
-            startBtn.addEventListener('click', () => {
-                this.switchTab('settings');
-            });
-        }
     }
 
     switchTab(tabName) {
@@ -261,9 +258,12 @@ class FileTransferApp {
         this.roomId = this.generateRoomId();
         this.isHost = true;
         this.elements.roomId.textContent = this.roomId;
-        this.elements.roomDisplay.classList.add('show');
+        this.elements.roomDisplay.classList.remove('hidden');
+        this.elements.joinInputDisplay.classList.add('hidden');
         this.elements.createRoomBtn.classList.add('hidden');
         this.elements.joinRoomBtn.classList.add('hidden');
+        this.elements.confirmJoinBtn.classList.add('hidden');
+        this.elements.cancelJoinBtn.classList.add('hidden');
         this.elements.disconnectBtn.classList.remove('hidden');
 
         this.updateConnectionStatus('waiting', '等待连接');
@@ -271,8 +271,23 @@ class FileTransferApp {
     }
 
     showJoinForm() {
-        this.elements.joinForm.classList.toggle('show');
+        this.elements.roomDisplay.classList.add('hidden');
+        this.elements.joinInputDisplay.classList.remove('hidden');
+        this.elements.createRoomBtn.classList.add('hidden');
         this.elements.joinRoomBtn.classList.add('hidden');
+        this.elements.confirmJoinBtn.classList.remove('hidden');
+        this.elements.cancelJoinBtn.classList.remove('hidden');
+        this.elements.roomIdInput.focus();
+    }
+
+    cancelJoin() {
+        this.elements.roomDisplay.classList.remove('hidden');
+        this.elements.joinInputDisplay.classList.add('hidden');
+        this.elements.createRoomBtn.classList.remove('hidden');
+        this.elements.joinRoomBtn.classList.remove('hidden');
+        this.elements.confirmJoinBtn.classList.add('hidden');
+        this.elements.cancelJoinBtn.classList.add('hidden');
+        this.elements.roomIdInput.value = '';
     }
 
     joinRoom() {
@@ -285,10 +300,12 @@ class FileTransferApp {
         this.roomId = 'yan' + inputRoomId;
         this.isHost = false;
         this.elements.roomId.textContent = this.roomId;
-        this.elements.roomDisplay.classList.add('show');
-        this.elements.joinForm.classList.remove('show');
+        this.elements.roomDisplay.classList.remove('hidden');
+        this.elements.joinInputDisplay.classList.add('hidden');
         this.elements.createRoomBtn.classList.add('hidden');
         this.elements.joinRoomBtn.classList.add('hidden');
+        this.elements.confirmJoinBtn.classList.add('hidden');
+        this.elements.cancelJoinBtn.classList.add('hidden');
         this.elements.disconnectBtn.classList.remove('hidden');
 
         this.updateConnectionStatus('waiting', '正在连接...');
@@ -325,15 +342,38 @@ class FileTransferApp {
         this.isHost = false;
         this.devices = {};
 
+        // 清除所有缓冲数据
+        this.filesToSend = [];
+        this.receivedFiles = [];
+        this.receivedFileBlobs = {};
+        this.messages = [];
+        this.fileChunks = {};
+        this.transferHistory = [];
+        this.selectedFileTargets.clear();
+        this.selectedMessageTargets.clear();
+
         this.elements.roomId.textContent = '------';
-        this.elements.roomDisplay.classList.remove('show');
+        this.elements.roomDisplay.classList.remove('hidden');
+        this.elements.joinInputDisplay.classList.add('hidden');
         this.elements.createRoomBtn.classList.remove('hidden');
         this.elements.joinRoomBtn.classList.remove('hidden');
+        this.elements.confirmJoinBtn.classList.add('hidden');
+        this.elements.cancelJoinBtn.classList.add('hidden');
         this.elements.disconnectBtn.classList.add('hidden');
-        this.elements.joinForm.classList.remove('show');
+        this.elements.roomIdInput.value = '';
+
+        // 清除界面数据
+        this.elements.fileList.innerHTML = '';
+        this.elements.sendFilesBtn.classList.add('hidden');
+        this.elements.progressList.innerHTML = '';
+        this.elements.progressList.parentElement.classList.add('hidden');
+        this.renderReceivedFiles();
+        this.renderMessages();
+        this.renderHistory();
 
         this.renderDevicesList();
         this.updateConnectionStatus('waiting', '等待连接');
+        this.switchTab('settings'); // 断开后返回设置页面
         this.showToast('已断开连接', 'success');
     }
 
@@ -773,6 +813,11 @@ class FileTransferApp {
     updateConnectionStatus(status, message) {
         this.elements.connectionStatus.textContent = message;
         this.elements.connectionStatus.className = 'status ' + status;
+        
+        // 连接成功后自动切换到文件发送页面
+        if (status === 'connected') {
+            this.switchTab('file');
+        }
     }
 
     handleFileSelect(e) {
@@ -906,6 +951,15 @@ class FileTransferApp {
 
                 this.updateProgress(fileId, 100, fileSize, '已完成');
                 this.addToHistory('sent', file.name, fileSize);
+                
+                // 发送的文件也添加到列表中
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const blob = new Blob([e.target.result], { type: 'application/octet-stream' });
+                    this.addReceivedFile(file.name, file.size, blob);
+                };
+                reader.readAsArrayBuffer(file);
+                
                 this.showToast(`已发送: ${file.name}`, 'success');
                 return;
             }
@@ -1287,9 +1341,78 @@ class FileTransferApp {
         
         this.updateProgress(fileId, 100, fileData.fileSize, '已下载');
         this.addToHistory('received', fileData.fileName, fileData.fileSize, blob);
+        
+        // 添加到接收文件列表
+        this.addReceivedFile(fileData.fileName, fileData.fileSize, blob);
+        
         this.showToast(`已下载: ${fileData.fileName}`, 'success');
 
         delete this.fileChunks[fileId];
+    }
+
+    // 添加接收文件到列表
+    addReceivedFile(fileName, fileSize, blob) {
+        const fileId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+        this.receivedFiles.push({
+            id: fileId,
+            name: fileName,
+            size: fileSize,
+            blob: blob,
+            time: new Date().toLocaleString('zh-CN')
+        });
+        this.receivedFileBlobs[fileId] = blob;
+        this.renderReceivedFiles();
+    }
+
+    // 渲染接收文件列表
+    renderReceivedFiles() {
+        if (this.receivedFiles.length === 0) {
+            this.elements.receivedFilesList.innerHTML = '<div class="empty-tip">暂无接收文件</div>';
+            return;
+        }
+
+        this.elements.receivedFilesList.innerHTML = this.receivedFiles.map((file) => `
+            <div class="file-item" onclick="app.openReceivedFile('${file.id}')">
+                <div class="file-info">
+                    <span class="file-icon">${this.getFileIcon(file.name)}</span>
+                    <div class="file-details">
+                        <span class="file-name">${file.name}</span>
+                        <span class="file-size">${this.formatFileSize(file.size)}</span>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // 打开接收的文件
+    openReceivedFile(fileId) {
+        const blob = this.receivedFileBlobs[fileId];
+        if (!blob) return;
+
+        const url = URL.createObjectURL(blob);
+        const file = this.receivedFiles.find(f => f.id === fileId);
+        
+        // 尝试在新窗口打开
+        const newWindow = window.open(url, '_blank');
+        if (!newWindow) {
+            // 如果无法打开，则尝试下载
+            this.downloadFile(blob, file?.name || 'file');
+        }
+        
+        // 延迟释放URL对象
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    // 下载文件
+    downloadFile(blob, fileName) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
 
     addProgressItem(fileId, fileName, fileSize) {

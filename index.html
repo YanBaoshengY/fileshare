@@ -10,10 +10,6 @@
     <!-- 顶部导航栏 -->
     <nav class="tab-nav">
         <div class="tab-nav-inner">
-            <div class="tab-item active" data-tab="welcome">
-                <span class="tab-icon">🏠</span>
-                <span class="tab-text">首页</span>
-            </div>
             <div class="tab-item" data-tab="file">
                 <span class="tab-icon">📁</span>
                 <span class="tab-text">文件</span>
@@ -22,7 +18,7 @@
                 <span class="tab-icon">💬</span>
                 <span class="tab-text">消息</span>
             </div>
-            <div class="tab-item" data-tab="settings">
+            <div class="tab-item active" data-tab="settings">
                 <span class="tab-icon">⚙️</span>
                 <span class="tab-text">设置</span>
             </div>
@@ -34,48 +30,6 @@
     </nav>
 
     <div class="container">
-        <!-- 欢迎/介绍页面 -->
-        <div class="tab-content active" id="welcome-content">
-            <div class="welcome-page">
-                <div class="welcome-logo">📤</div>
-                <h1 class="welcome-title">发个东西</h1>
-                <p class="welcome-subtitle">局域网文件传输工具</p>
-                
-                <div class="welcome-features">
-                    <div class="feature-item">
-                        <div class="feature-icon">🔒</div>
-                        <div class="feature-text">安全可靠</div>
-                        <div class="feature-desc">点对点传输，数据不经服务器</div>
-                    </div>
-                    <div class="feature-item">
-                        <div class="feature-icon">⚡</div>
-                        <div class="feature-text">快速便捷</div>
-                        <div class="feature-desc">局域网内速传</div>
-                    </div>
-                    <div class="feature-item">
-                        <div class="feature-icon">📱</div>
-                        <div class="feature-text">多设备支持</div>
-                        <div class="feature-desc">手机平板电脑都能用</div>
-                    </div>
-                </div>
-
-                <div class="welcome-action">
-                    <button class="btn btn-primary btn-large" id="startBtn">开始使用</button>
-                </div>
-
-                <div class="welcome-usage">
-                    <h3>使用方法</h3>
-                    <ol>
-                        <li>点击开始使用或导航栏设置按钮</li>
-                        <li>房主"创建房间"，获得房间号</li>
-                        <li>其余设备"加入房间"输入房间号</li>
-                        <li>即可相互发送文件和消息</li>
-                        <li>传输速率由网络决定</li>
-                    </ol>
-                </div>
-            </div>
-        </div>
-
         <!-- 文件传输页面 -->
         <div class="tab-content" id="file-content">
             <div class="page-header">
@@ -115,6 +69,14 @@
                 </div>
                 <div id="progressList" class="progress-list"></div>
             </div>
+
+            <!-- 接收文件列表 -->
+            <div class="received-files-section">
+                <div class="section-title">
+                    <span>接收的文件</span>
+                </div>
+                <div id="receivedFilesList" class="file-list"></div>
+            </div>
         </div>
 
         <!-- 消息页面 -->
@@ -151,7 +113,7 @@
         </div>
 
         <!-- 设置页面 -->
-        <div class="tab-content" id="settings-content">
+        <div class="tab-content active" id="settings-content">
             <div class="page-header">
                 <h2>⚙️ 设置</h2>
             </div>
@@ -164,16 +126,18 @@
                         <div class="room-id" id="roomId">------</div>
                         <div class="status waiting" id="connectionStatus">等待连接</div>
                     </div>
+                    <div id="joinInputDisplay" class="room-display hidden">
+                        <div class="room-label">输入房间号</div>
+                        <input type="text" id="roomIdInput" class="join-room-input" placeholder="请输入后4位" maxlength="4">
+                    </div>
                     <div class="room-actions">
                         <button id="createRoomBtn" class="btn btn-primary">创建房间</button>
                         <button id="joinRoomBtn" class="btn btn-secondary">加入房间</button>
+                        <button id="confirmJoinBtn" class="btn btn-primary hidden">确认加入</button>
+                        <button id="cancelJoinBtn" class="btn btn-secondary hidden">取消</button>
                     </div>
                     <div class="room-actions room-actions-secondary">
                         <button id="disconnectBtn" class="btn btn-danger hidden">断开连接</button>
-                    </div>
-                    <div id="joinForm" class="join-form">
-                        <input type="text" id="roomIdInput" placeholder="输入房间号后4位" maxlength="4">
-                        <button id="confirmJoinBtn" class="btn btn-primary" style="margin-top: 10px;">确认加入</button>
                     </div>
                 </div>
             </div>
