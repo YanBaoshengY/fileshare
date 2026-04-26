@@ -13,7 +13,7 @@ class FileTransferApp {
         this.transferHistory = [];
         this.messages = [];
         this.fileChunks = {};
-        this.CHUNK_SIZE = 512 * 1024; // 从64KB增加到512KB，大幅提升传输速度
+        this.CHUNK_SIZE = 256 * 1024; // 256KB，平衡速度和稳定性
         this.isHost = false;
         this.selectedFileTargets = new Set();
         this.selectedMessageTargets = new Set();
@@ -1030,8 +1030,8 @@ class FileTransferApp {
             }
 
             if (currentChunk < totalChunks) {
-                // 移除延迟，立即发送下一个块，大幅提升速度
-                requestAnimationFrame(sendNext);
+                // 使用小延迟避免网络拥堵
+                setTimeout(sendNext, 1);
             }
         };
 
