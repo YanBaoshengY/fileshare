@@ -868,8 +868,89 @@ body {
 }
 
 #qr-scanner video {
-  width: 100%;
-  border-radius: 0 0 12px 12px;
+    width: 100%;
+    border-radius: 0 0 12px 12px;
+}
+
+.qr-scanner-tabs {
+    display: flex;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.qr-scanner-tabs .tab-btn {
+    flex: 1;
+    padding: 12px;
+    background: none;
+    border: none;
+    font-size: 14px;
+    cursor: pointer;
+    color: #64748b;
+    transition: all 0.2s ease;
+}
+
+.qr-scanner-tabs .tab-btn.active {
+    color: #1e293b;
+    border-bottom: 2px solid #1e293b;
+    font-weight: 600;
+}
+
+.qr-scanner-tab-content {
+    display: none;
+    padding: 16px;
+}
+
+.qr-scanner-tab-content.active {
+    display: block;
+}
+
+.qr-scanner {
+    min-height: 280px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.qr-hint {
+    text-align: center;
+    color: #64748b;
+    font-size: 13px;
+    margin-top: 12px;
+}
+
+.qr-upload-area {
+    border: 2px dashed #cbd5e1;
+    border-radius: 12px;
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    min-height: 200px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+
+.qr-upload-area:hover {
+    border-color: #1e293b;
+    background: #f8fafc;
+}
+
+.qr-upload-area.dragover {
+    border-color: #1e293b;
+    background: #f0f4f8;
+    transform: scale(1.02);
+}
+
+.qr-upload-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+}
+
+.qr-upload-area p {
+    color: #64748b;
+    font-size: 14px;
+    margin: 0;
 }
 
 .progress-section.hidden {

@@ -6,9 +6,11 @@
     <title>发个东西 - 局域网传输 - v1.1.2</title>
     <link rel="stylesheet" href="style.css">
     <!-- QR Code 库 -->
-    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-    <!-- HTML5 扫码库 -->
-    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <!-- jsQR 库（备用） -->
+    <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+    <!-- QR Scanner 库 -->
+    <script src="https://unpkg.com/qr-scanner/qr-scanner.umd.min.js"></script>
 </head>
 <body>
     <!-- 顶部导航栏 -->
@@ -190,7 +192,21 @@
                 <h3>扫描二维码</h3>
                 <button id="closeScannerBtn" class="close-btn">×</button>
             </div>
-            <div id="qrScanner" class="qr-scanner"></div>
+            <div class="qr-scanner-tabs">
+                <button class="tab-btn active" data-tab="camera">摄像头</button>
+                <button class="tab-btn" data-tab="upload">上传图片</button>
+            </div>
+            <div class="qr-scanner-tab-content active" id="cameraTab">
+                <div id="qrScanner" class="qr-scanner"></div>
+                <p class="qr-hint">将二维码对准摄像头</p>
+            </div>
+            <div class="qr-scanner-tab-content" id="uploadTab">
+                <div class="qr-upload-area" id="qrUploadArea">
+                    <span class="qr-upload-icon">📷</span>
+                    <p>点击或拖拽上传二维码图片</p>
+                    <input type="file" id="qrImageInput" accept="image/*" class="file-input">
+                </div>
+            </div>
         </div>
     </div>
     

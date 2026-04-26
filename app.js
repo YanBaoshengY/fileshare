@@ -66,6 +66,8 @@ class FileTransferApp {
             qrScannerModal: document.getElementById('qrScannerModal'),
             qrScanner: document.getElementById('qrScanner'),
             closeScannerBtn: document.getElementById('closeScannerBtn'),
+            qrImageInput: document.getElementById('qrImageInput'),
+            qrUploadArea: document.getElementById('qrUploadArea'),
             toast: document.getElementById('toast')
         };
     }
@@ -91,6 +93,45 @@ class FileTransferApp {
                 this.closeQRScanner();
             }
         });
+        
+        // 扫码标签页切换
+        const tabBtns = document.querySelectorAll('.qr-scanner-tabs .tab-btn');
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const tabName = e.target.dataset.tab;
+                this.switchQrTab(tabName);
+            });
+        });
+        
+        // 图片上传
+        this.elements.qrImageInput.addEventListener('change', (e) => {
+            this.handleQrImageSelect(e);
+        });
+        
+        // 拖拽上传
+        this.elements.qrUploadArea.addEventListener('click', () => {
+            this.elements.qrImageInput.click();
+        });
+        
+        this.elements.qrUploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            this.elements.qrUploadArea.classList.add('dragover');
+        });
+        
+        this.elements.qrUploadArea.addEventListener('dragleave', () => {
+            this.elements.qrUploadArea.classList.remove('dragover');
+        });
+        
+        this.elements.qrUploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            this.elements.qrUploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                this.scanQrFromFile(files[0]);
+            }
+        });
+        
+        // 文件传输和消息相关
         this.elements.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
         this.elements.sendFilesBtn.addEventListener('click', () => this.sendFiles());
         this.elements.clearProgressBtn.addEventListener('click', () => this.clearProgress());
@@ -417,43 +458,165 @@ class FileTransferApp {
         }
     }
 
+    // 切换扫码标签页
+    switchQrTab(tabName) {
+        // 更新按钮状态
+        document.querySelectorAll('.qr-scanner-tabs .tab-btn').forEach(btn => {
+            btn.classList.remove('active');
+            if (btn.dataset.tab === tabName) {
+                btn.classList.add('active');
+            }
+        });
+        
+        // 更新内容显示
+        document.querySelectorAll('.qr-scanner-tab-content').forEach(content => {
+            content.classList.remove('active');
+        });
+        document.getElementById(tabName + 'Tab').classList.add('active');
+        
+        // 如果是摄像头标签，启动摄像头
+        if (tabName === 'camera') {
+            this.startCameraScanner();
+        } else {
+            this.stopCameraScanner();
+        }
+    }
+
     // 打开扫码器
     openQRScanner() {
         this.elements.qrScannerModal.classList.remove('hidden');
-        
-        if (window.Html5QrCode) {
-            this.html5QrCode = new window.Html5QrCode('qrScanner');
-            this.html5QrCode.start(
-                { facingMode: 'environment' },
-                { fps: 10, qrbox: { width: 250, height: 250 } },
-                (decodedText) => {
-                    this.handleQRCodeScan(decodedText);
-                },
-                (errorMessage) => {
-                    // 忽略解析错误
-                }
-            ).catch((err) => {
-                console.error('QR scanner error:', err);
-                this.showToast('无法访问摄像头', 'error');
-                this.closeQRScanner();
-            });
+        this.switchQrTab('camera'); // 默认显示摄像头
+    }
+
+    // 启动摄像头扫码
+    startCameraScanner() {
+        // 先检查是否有 QrScanner 库
+        if (typeof QrScanner !== 'undefined') {
+            try {
+                this.html5QrCode = new QrScanner(
+                    this.elements.qrScanner,
+                    (result) => {
+                        this.handleQRCodeScan(result);
+                    },
+                    {
+                        returnDetailedScanResult: true,
+                        highlightScanRegion: true,
+                        highlightCodeOutline: true
+                    }
+                );
+                this.html5QrCode.start().catch(err => {
+                    console.log('摄像头不可用，切换到上传模式:', err);
+                    this.switchQrTab('upload');
+                    this.showToast('摄像头不可用，请上传图片', 'error');
+                });
+            } catch (err) {
+                console.error('扫码器启动失败:', err);
+                this.switchQrTab('upload');
+                this.showToast('摄像头不可用，请上传图片', 'error');
+            }
         } else {
-            this.showToast('扫码功能不可用', 'error');
-            this.closeQRScanner();
+            console.log('扫码库未加载，切换到上传模式');
+            this.switchQrTab('upload');
+        }
+    }
+
+    // 停止摄像头
+    stopCameraScanner() {
+        if (this.html5QrCode) {
+            try {
+                this.html5QrCode.destroy();
+            } catch (e) {
+                console.error('停止扫码器失败:', e);
+            }
+            this.html5QrCode = null;
         }
     }
 
     // 关闭扫码器
     closeQRScanner() {
         this.elements.qrScannerModal.classList.add('hidden');
-        if (this.html5QrCode) {
-            this.html5QrCode.stop().catch(err => console.error('Error stopping QR scanner:', err));
-            this.html5QrCode = null;
+        this.stopCameraScanner();
+        // 重置输入
+        if (this.elements.qrImageInput) {
+            this.elements.qrImageInput.value = '';
+        }
+    }
+
+    // 处理图片选择
+    handleQrImageSelect(e) {
+        const file = e.target.files[0];
+        if (file) {
+            this.scanQrFromFile(file);
+        }
+    }
+
+    // 从文件扫描二维码
+    scanQrFromFile(file) {
+        if (!file.type.startsWith('image/')) {
+            this.showToast('请选择图片文件', 'error');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+                // 首先尝试使用 jsQR 库（更简单可靠）
+                if (typeof jsQR !== 'undefined') {
+                    this.tryScanWithCanvas(img);
+                } 
+                // 备用方案：使用 QrScanner
+                else if (typeof QrScanner !== 'undefined') {
+                    QrScanner.scanImage(img, { returnDetailedScanResult: true })
+                        .then(result => {
+                            this.handleQRCodeScan(result.data);
+                        })
+                        .catch(err => {
+                            console.log('使用库扫描失败:', err);
+                            this.showToast('未能识别二维码', 'error');
+                        });
+                } else {
+                    this.showToast('扫码功能不可用', 'error');
+                }
+            };
+            img.src = e.target.result;
+        };
+        reader.onerror = () => {
+            this.showToast('图片加载失败', 'error');
+        };
+        reader.readAsDataURL(file);
+    }
+
+    // 使用 canvas 的备用扫描方案
+    tryScanWithCanvas(img) {
+        try {
+            // 创建 canvas
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            
+            // 使用 jsQR 库扫描
+            if (typeof jsQR !== 'undefined') {
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                if (code) {
+                    this.handleQRCodeScan(code.data);
+                    return;
+                }
+            }
+            
+            this.showToast('未能识别二维码', 'error');
+        } catch (err) {
+            console.error('备用扫码失败:', err);
+            this.showToast('扫码失败，请重试', 'error');
         }
     }
 
     // 处理扫码结果
     handleQRCodeScan(decodedText) {
+        console.log('扫描到内容:', decodedText);
         if (decodedText && decodedText.startsWith('yan')) {
             this.closeQRScanner();
             // 提取房间号后4位
