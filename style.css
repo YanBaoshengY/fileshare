@@ -28,12 +28,15 @@ body {
 .tab-nav {
   position: sticky;
   top: 0;
+  left: 0;
+  right: 0;
   background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(10px);
   z-index: 100;
   padding: 12px 16px;
   border-bottom: 1px solid #e2e8f0;
   margin: -40px -20px 0;
+  width: 100%;
 }
 
 .tab-nav-inner {
@@ -783,176 +786,6 @@ body {
   width: 100%;
 }
 
-/* 二维码相关样式 */
-.qr-code-display {
-  text-align: center;
-  padding: 16px;
-  background: #f8fafc;
-  border-radius: 12px;
-  margin-top: 16px;
-}
-
-.qr-code-canvas {
-  display: flex;
-  justify-content: center;
-  margin-top: 12px;
-}
-
-.qr-code-canvas canvas {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: white;
-}
-
-/* 扫码模态框样式 */
-.qr-scanner-modal {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.qr-scanner-modal.hidden {
-  display: none;
-}
-
-.qr-scanner-content {
-  background: white;
-  border-radius: 12px;
-  width: 100%;
-  max-width: 480px;
-  overflow: hidden;
-}
-
-.qr-scanner-header {
-  padding: 16px 20px;
-  background: #f8fafc;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.qr-scanner-header h3 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-  color: #1e293b;
-}
-
-.close-btn {
-  background: none;
-  border: none;
-  font-size: 32px;
-  cursor: pointer;
-  color: #64748b;
-  padding: 0;
-  line-height: 1;
-}
-
-.close-btn:hover {
-  color: #1e293b;
-}
-
-.qr-scanner {
-  width: 100%;
-  min-height: 320px;
-  position: relative;
-}
-
-#qr-scanner video {
-    width: 100%;
-    border-radius: 0 0 12px 12px;
-}
-
-.qr-scanner-tabs {
-    display: flex;
-    border-bottom: 1px solid #e2e8f0;
-}
-
-.qr-scanner-tabs .tab-btn {
-    flex: 1;
-    padding: 12px;
-    background: none;
-    border: none;
-    font-size: 14px;
-    cursor: pointer;
-    color: #64748b;
-    transition: all 0.2s ease;
-}
-
-.qr-scanner-tabs .tab-btn.active {
-    color: #1e293b;
-    border-bottom: 2px solid #1e293b;
-    font-weight: 600;
-}
-
-.qr-scanner-tab-content {
-    display: none;
-    padding: 16px;
-}
-
-.qr-scanner-tab-content.active {
-    display: block;
-}
-
-.qr-scanner {
-    min-height: 280px;
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-.qr-hint {
-    text-align: center;
-    color: #64748b;
-    font-size: 13px;
-    margin-top: 12px;
-}
-
-.qr-upload-area {
-    border: 2px dashed #cbd5e1;
-    border-radius: 12px;
-    padding: 40px 20px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    min-height: 200px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-}
-
-.qr-upload-area:hover {
-    border-color: #1e293b;
-    background: #f8fafc;
-}
-
-.qr-upload-area.dragover {
-    border-color: #1e293b;
-    background: #f0f4f8;
-    transform: scale(1.02);
-}
-
-.qr-upload-icon {
-    font-size: 48px;
-    margin-bottom: 12px;
-}
-
-.qr-upload-area p {
-    color: #64748b;
-    font-size: 14px;
-    margin: 0;
-}
-
 .progress-section.hidden {
   display: none;
 }
@@ -1260,16 +1093,29 @@ body {
 }
 
 @media (max-width: 767px) {
+  html, body {
+    width: 100%;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+
   body {
     padding: 0 0 20px;
+    position: relative;
   }
 
   .tab-nav {
     padding: 10px 12px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    margin: 0;
+    z-index: 1000;
   }
 
   .tab-nav-inner {
-    justify-content: flex-start;
+    justify-content: center;
   }
 
   .tab-item {
@@ -1278,7 +1124,7 @@ body {
 
   .container {
     max-width: 100%;
-    padding: 16px;
+    padding: 70px 16px 16px;
   }
 
   .page-header h2 {

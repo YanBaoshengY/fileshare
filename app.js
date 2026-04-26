@@ -17,7 +17,6 @@ class FileTransferApp {
         this.isHost = false;
         this.selectedFileTargets = new Set();
         this.selectedMessageTargets = new Set();
-        this.html5QrCode = null;
 
         this.initElements();
         this.initEventListeners();
@@ -60,14 +59,6 @@ class FileTransferApp {
             progressList: document.getElementById('progressList'),
             transferHistory: document.getElementById('transferHistory'),
             receivedFilesList: document.getElementById('receivedFilesList'),
-            qrCodeDisplay: document.getElementById('qrCodeDisplay'),
-            qrCodeCanvas: document.getElementById('qrCodeCanvas'),
-            scanQRBtn: document.getElementById('scanQRBtn'),
-            qrScannerModal: document.getElementById('qrScannerModal'),
-            qrScanner: document.getElementById('qrScanner'),
-            closeScannerBtn: document.getElementById('closeScannerBtn'),
-            qrImageInput: document.getElementById('qrImageInput'),
-            qrUploadArea: document.getElementById('qrUploadArea'),
             toast: document.getElementById('toast')
         };
     }
@@ -84,54 +75,6 @@ class FileTransferApp {
         this.elements.roomIdInput.addEventListener('input', (e) => {
             e.target.value = e.target.value.replace(/\D/g, '');
         });
-        
-        // 扫码相关事件
-        this.elements.scanQRBtn.addEventListener('click', () => this.openQRScanner());
-        this.elements.closeScannerBtn.addEventListener('click', () => this.closeQRScanner());
-        this.elements.qrScannerModal.addEventListener('click', (e) => {
-            if (e.target === this.elements.qrScannerModal) {
-                this.closeQRScanner();
-            }
-        });
-        
-        // 扫码标签页切换
-        const tabBtns = document.querySelectorAll('.qr-scanner-tabs .tab-btn');
-        tabBtns.forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const tabName = e.target.dataset.tab;
-                this.switchQrTab(tabName);
-            });
-        });
-        
-        // 图片上传
-        this.elements.qrImageInput.addEventListener('change', (e) => {
-            this.handleQrImageSelect(e);
-        });
-        
-        // 拖拽上传
-        this.elements.qrUploadArea.addEventListener('click', () => {
-            this.elements.qrImageInput.click();
-        });
-        
-        this.elements.qrUploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            this.elements.qrUploadArea.classList.add('dragover');
-        });
-        
-        this.elements.qrUploadArea.addEventListener('dragleave', () => {
-            this.elements.qrUploadArea.classList.remove('dragover');
-        });
-        
-        this.elements.qrUploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            this.elements.qrUploadArea.classList.remove('dragover');
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                this.scanQrFromFile(files[0]);
-            }
-        });
-        
-        // 文件传输和消息相关
         this.elements.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
         this.elements.sendFilesBtn.addEventListener('click', () => this.sendFiles());
         this.elements.clearProgressBtn.addEventListener('click', () => this.clearProgress());
@@ -322,10 +265,8 @@ class FileTransferApp {
         this.elements.confirmJoinBtn.classList.add('hidden');
         this.elements.cancelJoinBtn.classList.add('hidden');
         this.elements.disconnectBtn.classList.remove('hidden');
-        this.elements.qrCodeDisplay.classList.remove('hidden');
 
         this.updateConnectionStatus('waiting', '等待连接');
-        this.generateQRCode(this.roomId);
         this.initPeer(this.roomId);
     }
 
@@ -419,11 +360,7 @@ class FileTransferApp {
         this.elements.confirmJoinBtn.classList.add('hidden');
         this.elements.cancelJoinBtn.classList.add('hidden');
         this.elements.disconnectBtn.classList.add('hidden');
-        this.elements.qrCodeDisplay.classList.add('hidden');
         this.elements.roomIdInput.value = '';
-
-        // 清除二维码
-        this.elements.qrCodeCanvas.innerHTML = '';
 
         // 清除界面数据
         this.elements.fileList.innerHTML = '';
@@ -438,194 +375,6 @@ class FileTransferApp {
         this.updateConnectionStatus('waiting', '等待连接');
         this.switchTab('settings'); // 断开后返回设置页面
         this.showToast('已断开连接', 'success');
-    }
-
-    // 生成二维码
-    generateQRCode(text) {
-        this.elements.qrCodeCanvas.innerHTML = '';
-        try {
-            new QRCode(this.elements.qrCodeCanvas, {
-                text: text,
-                width: 180,
-                height: 180,
-                colorDark: '#1e293b',
-                colorLight: '#ffffff',
-                correctLevel: QRCode.CorrectLevel.H
-            });
-        } catch (e) {
-            console.error('QR code generation failed:', e);
-            this.showToast('二维码生成失败', 'error');
-        }
-    }
-
-    // 切换扫码标签页
-    switchQrTab(tabName) {
-        // 更新按钮状态
-        document.querySelectorAll('.qr-scanner-tabs .tab-btn').forEach(btn => {
-            btn.classList.remove('active');
-            if (btn.dataset.tab === tabName) {
-                btn.classList.add('active');
-            }
-        });
-        
-        // 更新内容显示
-        document.querySelectorAll('.qr-scanner-tab-content').forEach(content => {
-            content.classList.remove('active');
-        });
-        document.getElementById(tabName + 'Tab').classList.add('active');
-        
-        // 如果是摄像头标签，启动摄像头
-        if (tabName === 'camera') {
-            this.startCameraScanner();
-        } else {
-            this.stopCameraScanner();
-        }
-    }
-
-    // 打开扫码器
-    openQRScanner() {
-        this.elements.qrScannerModal.classList.remove('hidden');
-        this.switchQrTab('camera'); // 默认显示摄像头
-    }
-
-    // 启动摄像头扫码
-    startCameraScanner() {
-        // 先检查是否有 QrScanner 库
-        if (typeof QrScanner !== 'undefined') {
-            try {
-                this.html5QrCode = new QrScanner(
-                    this.elements.qrScanner,
-                    (result) => {
-                        this.handleQRCodeScan(result);
-                    },
-                    {
-                        returnDetailedScanResult: true,
-                        highlightScanRegion: true,
-                        highlightCodeOutline: true
-                    }
-                );
-                this.html5QrCode.start().catch(err => {
-                    console.log('摄像头不可用，切换到上传模式:', err);
-                    this.switchQrTab('upload');
-                    this.showToast('摄像头不可用，请上传图片', 'error');
-                });
-            } catch (err) {
-                console.error('扫码器启动失败:', err);
-                this.switchQrTab('upload');
-                this.showToast('摄像头不可用，请上传图片', 'error');
-            }
-        } else {
-            console.log('扫码库未加载，切换到上传模式');
-            this.switchQrTab('upload');
-        }
-    }
-
-    // 停止摄像头
-    stopCameraScanner() {
-        if (this.html5QrCode) {
-            try {
-                this.html5QrCode.destroy();
-            } catch (e) {
-                console.error('停止扫码器失败:', e);
-            }
-            this.html5QrCode = null;
-        }
-    }
-
-    // 关闭扫码器
-    closeQRScanner() {
-        this.elements.qrScannerModal.classList.add('hidden');
-        this.stopCameraScanner();
-        // 重置输入
-        if (this.elements.qrImageInput) {
-            this.elements.qrImageInput.value = '';
-        }
-    }
-
-    // 处理图片选择
-    handleQrImageSelect(e) {
-        const file = e.target.files[0];
-        if (file) {
-            this.scanQrFromFile(file);
-        }
-    }
-
-    // 从文件扫描二维码
-    scanQrFromFile(file) {
-        if (!file.type.startsWith('image/')) {
-            this.showToast('请选择图片文件', 'error');
-            return;
-        }
-
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const img = new Image();
-            img.onload = () => {
-                // 首先尝试使用 jsQR 库（更简单可靠）
-                if (typeof jsQR !== 'undefined') {
-                    this.tryScanWithCanvas(img);
-                } 
-                // 备用方案：使用 QrScanner
-                else if (typeof QrScanner !== 'undefined') {
-                    QrScanner.scanImage(img, { returnDetailedScanResult: true })
-                        .then(result => {
-                            this.handleQRCodeScan(result.data);
-                        })
-                        .catch(err => {
-                            console.log('使用库扫描失败:', err);
-                            this.showToast('未能识别二维码', 'error');
-                        });
-                } else {
-                    this.showToast('扫码功能不可用', 'error');
-                }
-            };
-            img.src = e.target.result;
-        };
-        reader.onerror = () => {
-            this.showToast('图片加载失败', 'error');
-        };
-        reader.readAsDataURL(file);
-    }
-
-    // 使用 canvas 的备用扫描方案
-    tryScanWithCanvas(img) {
-        try {
-            // 创建 canvas
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            
-            // 使用 jsQR 库扫描
-            if (typeof jsQR !== 'undefined') {
-                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                const code = jsQR(imageData.data, imageData.width, imageData.height);
-                if (code) {
-                    this.handleQRCodeScan(code.data);
-                    return;
-                }
-            }
-            
-            this.showToast('未能识别二维码', 'error');
-        } catch (err) {
-            console.error('备用扫码失败:', err);
-            this.showToast('扫码失败，请重试', 'error');
-        }
-    }
-
-    // 处理扫码结果
-    handleQRCodeScan(decodedText) {
-        console.log('扫描到内容:', decodedText);
-        if (decodedText && decodedText.startsWith('yan')) {
-            this.closeQRScanner();
-            // 提取房间号后4位
-            const roomNum = decodedText.slice(-4);
-            this.elements.roomIdInput.value = roomNum;
-            this.joinRoom();
-        } else {
-            this.showToast('无效的房间二维码', 'error');
-        }
     }
 
     addDevice(deviceId, nickname) {
