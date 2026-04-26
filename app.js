@@ -22,6 +22,20 @@ class FileTransferApp {
         this.initEventListeners();
         this.loadNickname();
         this.renderReceivedFiles(); // 初始化接收文件列表
+        this.initPageVisibilityListener();
+    }
+
+    initPageVisibilityListener() {
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && this.roomId) {
+                // 页面从隐藏变为可见，检查连接状态
+                const openConnections = this.connections.filter(c => c.open);
+                if (openConnections.length === 0) {
+                    // 没有打开的连接，断开连接
+                    this.disconnect();
+                }
+            }
+        });
     }
 
     initElements() {
@@ -463,10 +477,9 @@ class FileTransferApp {
 
         this.connections = this.connections.filter(c => c.peer !== deviceId);
 
+        // 只有在还有其他连接时才更新状态
         const otherDevicesCount = Object.keys(this.devices).length - 1;
-        if (otherDevicesCount <= 0) {
-            this.updateConnectionStatus('waiting', '等待连接');
-        } else {
+        if (otherDevicesCount > 0) {
             this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
         }
     }
@@ -570,8 +583,8 @@ class FileTransferApp {
         });
 
         this.peer.on('disconnected', () => {
-            this.updateConnectionStatus('waiting', '连接已断开');
             this.stopHeartbeat();
+            this.disconnect();
         });
 
         this.heartbeatInterval = null;
@@ -716,8 +729,9 @@ class FileTransferApp {
             this.removeDevice(conn.peer);
             const openConnections = this.connections.filter(c => c.open && c.peer !== conn.peer);
             if (openConnections.length === 0) {
+                // 所有连接都断开了，完全重置
                 this.stopHeartbeat();
-                this.updateConnectionStatus('disconnected', '连接断开');
+                this.disconnect();
             }
         });
 
@@ -952,13 +966,8 @@ class FileTransferApp {
                 this.updateProgress(fileId, 100, fileSize, '已完成');
                 this.addToHistory('sent', file.name, fileSize);
                 
-                // 发送的文件也添加到列表中
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const blob = new Blob([e.target.result], { type: 'application/octet-stream' });
-                    this.addReceivedFile(file.name, file.size, blob);
-                };
-                reader.readAsArrayBuffer(file);
+                // 发送的文件也添加到列表中 - 直接使用原始 File 对象
+                this.addReceivedFile(file.name, file.size, file);
                 
                 this.showToast(`已发送: ${file.name}`, 'success');
                 return;
@@ -1113,7 +1122,8 @@ class FileTransferApp {
             this.connections = this.connections.filter(c => c.peer !== data.deviceId);
             const otherDevicesCount = Object.keys(this.devices).length - 1;
             if (otherDevicesCount <= 0) {
-                this.updateConnectionStatus('waiting', '等待连接');
+                // 所有设备都离开了，完全重置
+                this.disconnect();
             } else {
                 this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
             }
@@ -1387,32 +1397,21 @@ class FileTransferApp {
     // 打开接收的文件
     openReceivedFile(fileId) {
         const blob = this.receivedFileBlobs[fileId];
-        if (!blob) return;
-
-        const url = URL.createObjectURL(blob);
         const file = this.receivedFiles.find(f => f.id === fileId);
+        if (!blob || !file) return;
         
-        // 尝试在新窗口打开
-        const newWindow = window.open(url, '_blank');
-        if (!newWindow) {
-            // 如果无法打开，则尝试下载
-            this.downloadFile(blob, file?.name || 'file');
-        }
-        
-        // 延迟释放URL对象
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    // 下载文件
-    downloadFile(blob, fileName) {
+        // 直接使用下载方式，与历史记录保持一致
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = fileName;
+        a.download = file.name;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        // 延迟释放，确保下载完成
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        
+        this.showToast(`正在下载: ${file.name}`, 'success');
     }
 
     addProgressItem(fileId, fileName, fileSize) {
