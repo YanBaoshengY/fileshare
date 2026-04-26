@@ -13,7 +13,7 @@ class FileTransferApp {
         this.transferHistory = [];
         this.messages = [];
         this.fileChunks = {};
-        this.CHUNK_SIZE = 512 * 1024; // 从64KB增加到512KB，大幅提升传输速度
+        this.CHUNK_SIZE = 64 * 1024;
         this.isHost = false;
         this.selectedFileTargets = new Set();
         this.selectedMessageTargets = new Set();
@@ -1006,8 +1006,17 @@ class FileTransferApp {
             }
 
             if (currentChunk < totalChunks) {
-                // 移除延迟，立即发送下一个块，大幅提升速度
-                requestAnimationFrame(sendNext);
+                setTimeout(sendNext, 5);
+            } else {
+                sendMethod({
+                    type: 'file-complete',
+                    fileId: fileId,
+                    fileSize: fileSize
+                });
+
+                this.updateProgress(fileId, 100, fileSize, '已完成');
+                this.addToHistory('sent', file.name, fileSize);
+                this.showToast(`已发送: ${file.name}`, 'success');
             }
         };
 
