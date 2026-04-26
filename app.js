@@ -17,6 +17,7 @@ class FileTransferApp {
         this.isHost = false;
         this.selectedFileTargets = new Set();
         this.selectedMessageTargets = new Set();
+        this.html5QrCode = null;
 
         this.initElements();
         this.initEventListeners();
@@ -59,6 +60,12 @@ class FileTransferApp {
             progressList: document.getElementById('progressList'),
             transferHistory: document.getElementById('transferHistory'),
             receivedFilesList: document.getElementById('receivedFilesList'),
+            qrCodeDisplay: document.getElementById('qrCodeDisplay'),
+            qrCodeCanvas: document.getElementById('qrCodeCanvas'),
+            scanQRBtn: document.getElementById('scanQRBtn'),
+            qrScannerModal: document.getElementById('qrScannerModal'),
+            qrScanner: document.getElementById('qrScanner'),
+            closeScannerBtn: document.getElementById('closeScannerBtn'),
             toast: document.getElementById('toast')
         };
     }
@@ -74,6 +81,15 @@ class FileTransferApp {
         });
         this.elements.roomIdInput.addEventListener('input', (e) => {
             e.target.value = e.target.value.replace(/\D/g, '');
+        });
+        
+        // 扫码相关事件
+        this.elements.scanQRBtn.addEventListener('click', () => this.openQRScanner());
+        this.elements.closeScannerBtn.addEventListener('click', () => this.closeQRScanner());
+        this.elements.qrScannerModal.addEventListener('click', (e) => {
+            if (e.target === this.elements.qrScannerModal) {
+                this.closeQRScanner();
+            }
         });
         this.elements.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
         this.elements.sendFilesBtn.addEventListener('click', () => this.sendFiles());
@@ -265,8 +281,10 @@ class FileTransferApp {
         this.elements.confirmJoinBtn.classList.add('hidden');
         this.elements.cancelJoinBtn.classList.add('hidden');
         this.elements.disconnectBtn.classList.remove('hidden');
+        this.elements.qrCodeDisplay.classList.remove('hidden');
 
         this.updateConnectionStatus('waiting', '等待连接');
+        this.generateQRCode(this.roomId);
         this.initPeer(this.roomId);
     }
 
@@ -360,7 +378,11 @@ class FileTransferApp {
         this.elements.confirmJoinBtn.classList.add('hidden');
         this.elements.cancelJoinBtn.classList.add('hidden');
         this.elements.disconnectBtn.classList.add('hidden');
+        this.elements.qrCodeDisplay.classList.add('hidden');
         this.elements.roomIdInput.value = '';
+
+        // 清除二维码
+        this.elements.qrCodeCanvas.innerHTML = '';
 
         // 清除界面数据
         this.elements.fileList.innerHTML = '';
@@ -375,6 +397,72 @@ class FileTransferApp {
         this.updateConnectionStatus('waiting', '等待连接');
         this.switchTab('settings'); // 断开后返回设置页面
         this.showToast('已断开连接', 'success');
+    }
+
+    // 生成二维码
+    generateQRCode(text) {
+        this.elements.qrCodeCanvas.innerHTML = '';
+        try {
+            new QRCode(this.elements.qrCodeCanvas, {
+                text: text,
+                width: 180,
+                height: 180,
+                colorDark: '#1e293b',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.H
+            });
+        } catch (e) {
+            console.error('QR code generation failed:', e);
+            this.showToast('二维码生成失败', 'error');
+        }
+    }
+
+    // 打开扫码器
+    openQRScanner() {
+        this.elements.qrScannerModal.classList.remove('hidden');
+        
+        if (window.Html5QrCode) {
+            this.html5QrCode = new window.Html5QrCode('qrScanner');
+            this.html5QrCode.start(
+                { facingMode: 'environment' },
+                { fps: 10, qrbox: { width: 250, height: 250 } },
+                (decodedText) => {
+                    this.handleQRCodeScan(decodedText);
+                },
+                (errorMessage) => {
+                    // 忽略解析错误
+                }
+            ).catch((err) => {
+                console.error('QR scanner error:', err);
+                this.showToast('无法访问摄像头', 'error');
+                this.closeQRScanner();
+            });
+        } else {
+            this.showToast('扫码功能不可用', 'error');
+            this.closeQRScanner();
+        }
+    }
+
+    // 关闭扫码器
+    closeQRScanner() {
+        this.elements.qrScannerModal.classList.add('hidden');
+        if (this.html5QrCode) {
+            this.html5QrCode.stop().catch(err => console.error('Error stopping QR scanner:', err));
+            this.html5QrCode = null;
+        }
+    }
+
+    // 处理扫码结果
+    handleQRCodeScan(decodedText) {
+        if (decodedText && decodedText.startsWith('yan')) {
+            this.closeQRScanner();
+            // 提取房间号后4位
+            const roomNum = decodedText.slice(-4);
+            this.elements.roomIdInput.value = roomNum;
+            this.joinRoom();
+        } else {
+            this.showToast('无效的房间二维码', 'error');
+        }
     }
 
     addDevice(deviceId, nickname) {

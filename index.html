@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>发个东西 - 局域网传输 - v1.1.2</title>
     <link rel="stylesheet" href="style.css">
+    <!-- QR Code 库 -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+    <!-- HTML5 扫码库 -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
     <!-- 顶部导航栏 -->
@@ -126,10 +130,19 @@
                         <div class="room-id" id="roomId">------</div>
                         <div class="status waiting" id="connectionStatus">等待连接</div>
                     </div>
+                    
+                    <!-- 二维码显示区域 -->
+                    <div id="qrCodeDisplay" class="qr-code-display hidden">
+                        <div class="room-label">扫描二维码加入</div>
+                        <div id="qrCodeCanvas" class="qr-code-canvas"></div>
+                    </div>
+                    
                     <div id="joinInputDisplay" class="room-display hidden">
                         <div class="room-label">输入房间号</div>
                         <input type="text" id="roomIdInput" class="join-room-input" placeholder="请输入后4位" maxlength="4">
+                        <button id="scanQRBtn" class="btn btn-secondary" style="margin-top: 12px;">📷 扫描二维码加入</button>
                     </div>
+                    
                     <div class="room-actions">
                         <button id="createRoomBtn" class="btn btn-primary">创建房间</button>
                         <button id="joinRoomBtn" class="btn btn-secondary">加入房间</button>
@@ -170,6 +183,17 @@
         </div>
     </div>
 
+    <!-- 扫码模态框 -->
+    <div id="qrScannerModal" class="qr-scanner-modal hidden">
+        <div class="qr-scanner-content">
+            <div class="qr-scanner-header">
+                <h3>扫描二维码</h3>
+                <button id="closeScannerBtn" class="close-btn">×</button>
+            </div>
+            <div id="qrScanner" class="qr-scanner"></div>
+        </div>
+    </div>
+    
     <div id="toast" class="toast hidden"></div>
 
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>

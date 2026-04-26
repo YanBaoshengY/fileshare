@@ -783,6 +783,95 @@ body {
   width: 100%;
 }
 
+/* 二维码相关样式 */
+.qr-code-display {
+  text-align: center;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 12px;
+  margin-top: 16px;
+}
+
+.qr-code-canvas {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.qr-code-canvas canvas {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+}
+
+/* 扫码模态框样式 */
+.qr-scanner-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.qr-scanner-modal.hidden {
+  display: none;
+}
+
+.qr-scanner-content {
+  background: white;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 480px;
+  overflow: hidden;
+}
+
+.qr-scanner-header {
+  padding: 16px 20px;
+  background: #f8fafc;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.qr-scanner-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: #1e293b;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 32px;
+  cursor: pointer;
+  color: #64748b;
+  padding: 0;
+  line-height: 1;
+}
+
+.close-btn:hover {
+  color: #1e293b;
+}
+
+.qr-scanner {
+  width: 100%;
+  min-height: 320px;
+  position: relative;
+}
+
+#qr-scanner video {
+  width: 100%;
+  border-radius: 0 0 12px 12px;
+}
+
 .progress-section.hidden {
   display: none;
 }
