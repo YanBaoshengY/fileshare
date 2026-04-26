@@ -13,7 +13,7 @@ class FileTransferApp {
         this.transferHistory = [];
         this.messages = [];
         this.fileChunks = {};
-        this.CHUNK_SIZE = 256 * 1024; // 256KB，平衡速度和稳定性
+        this.CHUNK_SIZE = 512 * 1024; // 从64KB增加到512KB，大幅提升传输速度
         this.isHost = false;
         this.selectedFileTargets = new Set();
         this.selectedMessageTargets = new Set();
@@ -594,36 +594,12 @@ class FileTransferApp {
         this.stopHeartbeat();
         this.heartbeatInterval = setInterval(() => {
             const openConnections = this.connections.filter(c => c.open);
-            const closedConnections = this.connections.filter(c => !c.open);
-            
-            // 清理已经关闭的连接
-            if (closedConnections.length > 0) {
-                closedConnections.forEach(conn => {
-                    this.removeDevice(conn.peer);
-                });
-                this.connections = openConnections;
-            }
-
-            // 如果没有打开的连接了，完全断开
-            if (openConnections.length === 0) {
-                this.stopHeartbeat();
-                this.disconnect();
-                return;
-            }
-
-            // 发送心跳
             openConnections.forEach(conn => {
                 if (conn.peer !== this.peerId) {
-                    try {
-                        conn.send({ type: 'heartbeat', time: Date.now() });
-                    } catch (e) {
-                        // 发送失败，移除这个连接
-                        this.removeDevice(conn.peer);
-                        this.connections = this.connections.filter(c => c.peer !== conn.peer);
-                    }
+                    conn.send({ type: 'heartbeat', time: Date.now() });
                 }
             });
-        }, 5000); // 从10秒缩短到5秒，更快速地检测断开
+        }, 10000);
     }
 
     stopHeartbeat() {
@@ -1030,8 +1006,8 @@ class FileTransferApp {
             }
 
             if (currentChunk < totalChunks) {
-                // 使用小延迟避免网络拥堵
-                setTimeout(sendNext, 1);
+                // 移除延迟，立即发送下一个块，大幅提升速度
+                requestAnimationFrame(sendNext);
             }
         };
 
