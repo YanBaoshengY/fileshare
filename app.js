@@ -1,1610 +1,1812 @@
-class FileTransferApp {
-    constructor() {
-        this.peer = null;
-        this.connections = [];
-        this.devices = {};
-        this.pendingConnections = new Set();
-        this.roomId = null;
-        this.peerId = null;
-        this.nickname = localStorage.getItem('nickname') || '匿名';
-        this.filesToSend = [];
-        this.receivedFiles = [];
-        this.receivedFileBlobs = {};
-        this.transferHistory = [];
-        this.messages = [];
-        this.fileChunks = {};
-        this.CHUNK_SIZE = 64 * 1024;
-        this.isHost = false;
-        this.selectedFileTargets = new Set();
-        this.selectedMessageTargets = new Set();
+/**
+ * 发个东西 - 局域网传输工具
+ * 优化版本 v1.2.0
+ * 包含：错误处理、重连机制、内存优化、暂停/继续、浏览器通知
+ */
 
-        this.initElements();
-        this.initEventListeners();
-        this.loadNickname();
-        this.renderReceivedFiles(); // 初始化接收文件列表
-        this.initPageVisibilityListener();
+// ==========================================
+// 模块1: 工具函数 (Utils)
+// ==========================================
+const Utils = {
+  /**
+   * HTML 转义，防止 XSS
+   */
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  },
+
+  /**
+   * 格式化文件大小
+   */
+  formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  },
+
+  /**
+   * 获取文件图标
+   */
+  getFileIcon(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    const icons = {
+      pdf: '📄', doc: '📝', docx: '📝', txt: '📃',
+      jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', svg: '🖼️', webp: '🖼️',
+      mp4: '🎥', avi: '🎥', mov: '🎥', mkv: '🎥', webm: '🎥',
+      mp3: '🎵', wav: '🎵', flac: '🎵', aac: '🎵',
+      zip: '📦', rar: '📦', '7z': '📦', tar: '📦', gz: '📦',
+      js: '💻', ts: '💻', html: '💻', css: '💻', py: '💻', java: '💻',
+      json: '📋', xml: '📋', csv: '📊', xlsx: '📊', xls: '📊'
+    };
+    return icons[ext] || '📁';
+  },
+
+  /**
+   * 生成唯一 ID
+   */
+  generateId() {
+    return Date.now().toString(36) + Math.random().toString(36).substr(2);
+  },
+
+  /**
+   * 延迟函数
+   */
+  delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+};
+
+// ==========================================
+// 模块2: 通知管理器 (NotificationManager)
+// ==========================================
+class NotificationManager {
+  constructor() {
+    this.permission = 'default';
+    this.init();
+  }
+
+  init() {
+    if ('Notification' in window) {
+      this.permission = Notification.permission;
+    }
+  }
+
+  async requestPermission() {
+    if (!('Notification' in window)) {
+      return false;
+    }
+    if (this.permission === 'granted') {
+      return true;
+    }
+    this.permission = await Notification.requestPermission();
+    return this.permission === 'granted';
+  }
+
+  show(title, options = {}) {
+    if (!('Notification' in window) || this.permission !== 'granted') {
+      return;
+    }
+    if (document.visibilityState === 'visible') {
+      return; // 页面可见时不显示通知
+    }
+    new Notification(title, {
+      icon: '📦',
+      ...options
+    });
+  }
+}
+
+// ==========================================
+// 模块3: 文件传输管理器 (FileTransferManager)
+// ==========================================
+class FileTransferManager {
+  constructor(app) {
+    this.app = app;
+    this.transfers = new Map(); // 活跃的传输任务
+    this.CHUNK_SIZE = 64 * 1024; // 64KB
+    this.MAX_MEMORY_SIZE = 500 * 1024 * 1024; // 500MB 最大内存占用
+  }
+
+  /**
+   * 创建发送任务
+   */
+  createSendTask(file, targets) {
+    const fileId = Utils.generateId();
+    const totalChunks = Math.ceil(file.size / this.CHUNK_SIZE);
+    
+    const task = {
+      fileId,
+      file,
+      fileName: file.name,
+      fileSize: file.size,
+      totalChunks,
+      currentChunk: 0,
+      targets,
+      status: 'pending', // pending, sending, paused, completed, cancelled, error
+      progress: 0,
+      sentBytes: 0,
+      startTime: Date.now(),
+      lastProgressTime: Date.now()
+    };
+
+    this.transfers.set(fileId, task);
+    return task;
+  }
+
+  /**
+   * 创建接收任务
+   */
+  createReceiveTask(fileId, fileName, fileSize, totalChunks, senderName) {
+    const task = {
+      fileId,
+      fileName,
+      fileSize,
+      totalChunks,
+      currentChunk: 0,
+      chunks: [],
+      status: 'receiving',
+      progress: 0,
+      receivedBytes: 0,
+      senderName,
+      startTime: Date.now()
+    };
+
+    this.transfers.set(fileId, task);
+    return task;
+  }
+
+  /**
+   * 开始发送文件
+   */
+  async startSend(fileId) {
+    const task = this.transfers.get(fileId);
+    if (!task || (task.status !== 'pending' && task.status !== 'paused')) return;
+
+    task.status = 'sending';
+    
+    // 如果是暂停后恢复，不需要重新发送元数据和添加进度项
+    const isResuming = task.currentChunk > 0;
+    
+    if (!isResuming) {
+      // 发送文件元数据
+      const sendMethod = task.targets 
+        ? (data) => this.app.sendToTargets(task.targets, data)
+        : (data) => this.app.broadcast(data);
+
+      sendMethod({
+        type: 'file-meta',
+        fileId: task.fileId,
+        fileName: task.fileName,
+        fileSize: task.fileSize,
+        totalChunks: task.totalChunks,
+        senderName: this.app.nickname || '匿名'
+      });
+
+      this.app.addProgressItem(task);
     }
 
-    initPageVisibilityListener() {
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && this.roomId) {
-                // 页面从隐藏变为可见，检查连接状态
-                const openConnections = this.connections.filter(c => c.open);
-                if (openConnections.length === 0) {
-                    // 没有打开的连接，断开连接
-                    this.disconnect();
-                }
-            }
-        });
+    // 立即更新状态为发送中
+    this.app.updateProgress(fileId, task.progress, task.sentBytes, '发送中...');
+    
+    // 开始发送数据块
+    await this.sendChunks(fileId);
+  }
+
+  /**
+   * 发送文件块
+   */
+  async sendChunks(fileId) {
+    const task = this.transfers.get(fileId);
+    if (!task || task.status !== 'sending') return;
+
+    const sendMethod = task.targets 
+      ? (data) => this.app.sendToTargets(task.targets, data)
+      : (data) => this.app.broadcast(data);
+
+    while (task.currentChunk < task.totalChunks && task.status === 'sending') {
+      const chunk = task.file.slice(
+        task.currentChunk * this.CHUNK_SIZE,
+        Math.min((task.currentChunk + 1) * this.CHUNK_SIZE, task.fileSize)
+      );
+
+      const arrayBuffer = await chunk.arrayBuffer();
+      
+      sendMethod({
+        type: 'file-chunk',
+        fileId: task.fileId,
+        chunk: arrayBuffer,
+        chunkIndex: task.currentChunk,
+        totalChunks: task.totalChunks
+      });
+
+      task.currentChunk++;
+      task.sentBytes = Math.min(task.currentChunk * this.CHUNK_SIZE, task.fileSize);
+      task.progress = Math.round((task.currentChunk / task.totalChunks) * 100);
+
+      // 每次都更新进度，让用户看到更流畅的进度
+      this.app.updateProgress(task.fileId, task.progress, task.sentBytes);
+      task.lastProgressTime = Date.now();
+
+      // 给浏览器一些喘息时间，防止 UI 卡顿
+      await Utils.delay(5);
     }
 
-    initElements() {
-        this.elements = {
-            nicknameInput: document.getElementById('nicknameInput'),
-            createRoomBtn: document.getElementById('createRoomBtn'),
-            joinRoomBtn: document.getElementById('joinRoomBtn'),
-            cancelJoinBtn: document.getElementById('cancelJoinBtn'),
-            disconnectBtn: document.getElementById('disconnectBtn'),
-            confirmJoinBtn: document.getElementById('confirmJoinBtn'),
-            roomDisplay: document.getElementById('roomDisplay'),
-            joinInputDisplay: document.getElementById('joinInputDisplay'),
-            roomId: document.getElementById('roomId'),
-            connectionStatus: document.getElementById('connectionStatus'),
-            roomIdInput: document.getElementById('roomIdInput'),
-            devicesList: document.getElementById('devicesList'),
-            devicesListContent: document.getElementById('devicesListContent'),
-            peerNickname: document.getElementById('peerNickname'),
-            fileTargetRoom: document.querySelector('input[name="fileTarget"][value="room"]'),
-            fileTargetSpecific: document.querySelector('input[name="fileTarget"][value="specific"]'),
-            fileTargetDevices: document.getElementById('fileTargetDevices'),
-            fileTargetDevicesList: document.getElementById('fileTargetDevicesList'),
-            messageTargetRoom: document.querySelector('input[name="messageTarget"][value="room"]'),
-            messageTargetSpecific: document.querySelector('input[name="messageTarget"][value="specific"]'),
-            messageTargetDevices: document.getElementById('messageTargetDevices'),
-            messageTargetDevicesList: document.getElementById('messageTargetDevicesList'),
-            dropZone: document.getElementById('dropZone'),
-            fileInput: document.getElementById('fileInput'),
-            fileList: document.getElementById('fileList'),
-            sendFilesBtn: document.getElementById('sendFilesBtn'),
-            clearProgressBtn: document.getElementById('clearProgressBtn'),
-            messageInput: document.getElementById('messageInput'),
-            sendMessageBtn: document.getElementById('sendMessageBtn'),
-            messagesList: document.getElementById('messagesList'),
-            progressList: document.getElementById('progressList'),
-            transferHistory: document.getElementById('transferHistory'),
-            receivedFilesList: document.getElementById('receivedFilesList'),
-            toast: document.getElementById('toast')
-        };
+    if (task.status === 'sending') {
+      // 传输完成
+      task.status = 'completed';
+      task.progress = 100;
+      
+      sendMethod({
+        type: 'file-complete',
+        fileId: task.fileId,
+        fileSize: task.fileSize
+      });
+
+      this.app.updateProgress(task.fileId, 100, task.fileSize, '已完成');
+      this.app.addToHistory('sent', task.fileName, task.fileSize);
+      this.app.addReceivedFile(task.fileName, task.fileSize, task.file);
+      this.app.showToast(`已发送: ${task.fileName}`, 'success');
+      
+      this.app.notificationManager.show('文件发送成功', {
+        body: `${task.fileName} (${Utils.formatFileSize(task.fileSize)})`
+      });
+
+      // 清理任务
+      setTimeout(() => this.cleanupTask(fileId), 2000);
+    }
+  }
+
+  /**
+   * 暂停传输
+   */
+  pauseTransfer(fileId) {
+    const task = this.transfers.get(fileId);
+    if (!task || task.status !== 'sending') return;
+
+    task.status = 'paused';
+    this.app.updateProgress(fileId, task.progress, task.sentBytes, '已暂停');
+    this.app.showToast('传输已暂停', 'success');
+  }
+
+  /**
+   * 继续传输
+   */
+  resumeTransfer(fileId) {
+    const task = this.transfers.get(fileId);
+    if (!task || task.status !== 'paused') return;
+
+    this.startSend(fileId);
+    this.app.showToast('传输已继续', 'success');
+  }
+
+  /**
+   * 取消传输
+   */
+  cancelTransfer(fileId) {
+    const task = this.transfers.get(fileId);
+    if (!task) return;
+
+    task.status = 'cancelled';
+    
+    const sendMethod = task.targets 
+      ? (data) => this.app.sendToTargets(task.targets, data)
+      : (data) => this.app.broadcast(data);
+
+    sendMethod({
+      type: 'file-cancelled',
+      fileId: fileId,
+      fileName: task.fileName
+    });
+
+    const progressItem = document.getElementById('progress-item-' + fileId);
+    if (progressItem) {
+      progressItem.remove();
     }
 
-    initEventListeners() {
-        this.elements.createRoomBtn.addEventListener('click', () => this.createRoom());
-        this.elements.joinRoomBtn.addEventListener('click', () => this.showJoinForm());
-        this.elements.confirmJoinBtn.addEventListener('click', () => this.joinRoom());
-        this.elements.cancelJoinBtn.addEventListener('click', () => this.cancelJoin());
-        this.elements.disconnectBtn.addEventListener('click', () => this.disconnect());
-        this.elements.roomIdInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.joinRoom();
-        });
-        this.elements.roomIdInput.addEventListener('input', (e) => {
-            e.target.value = e.target.value.replace(/\D/g, '');
-        });
-        this.elements.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
-        this.elements.sendFilesBtn.addEventListener('click', () => this.sendFiles());
-        this.elements.clearProgressBtn.addEventListener('click', () => this.clearProgress());
-        this.elements.sendMessageBtn.addEventListener('click', () => this.sendMessage());
+    this.cleanupTask(fileId);
+    this.app.showToast('已取消发送', 'error');
+  }
 
-        if (this.elements.fileTargetRoom) {
-            this.elements.fileTargetRoom.addEventListener('change', () => {
-                this.onFileTargetChange();
-            });
-        }
-        if (this.elements.fileTargetSpecific) {
-            this.elements.fileTargetSpecific.addEventListener('change', () => {
-                this.onFileTargetChange();
-            });
-        }
-        if (this.elements.messageTargetRoom) {
-            this.elements.messageTargetRoom.addEventListener('change', () => {
-                this.onMessageTargetChange();
-            });
-        }
-        if (this.elements.messageTargetSpecific) {
-            this.elements.messageTargetSpecific.addEventListener('change', () => {
-                this.onMessageTargetChange();
-            });
-        }
-
-        this.elements.dropZone.addEventListener('click', () => {
-            this.elements.fileInput.click();
-        });
-
-        this.elements.dropZone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            this.elements.dropZone.classList.add('dragover');
-        });
-
-        this.elements.dropZone.addEventListener('dragleave', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            this.elements.dropZone.classList.remove('dragover');
-        });
-
-        this.elements.dropZone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            this.elements.dropZone.classList.remove('dragover');
-            if (e.dataTransfer.files.length > 0) {
-                this.handleFileDrop(e.dataTransfer.files);
-            }
-        });
-
-        this.elements.nicknameInput.addEventListener('input', (e) => {
-            this.nickname = e.target.value.trim();
-            localStorage.setItem('nickname', this.nickname);
-        });
-
-        this.elements.messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                this.sendMessage();
-            }
-        });
-
-        document.querySelectorAll('.panel-header').forEach(header => {
-            header.addEventListener('click', () => {
-                const panel = header.parentElement;
-                panel.classList.toggle('expanded');
-            });
-        });
-
-        document.querySelectorAll('.panel').forEach(panel => {
-            panel.classList.add('expanded');
-        });
-
-        document.querySelectorAll('.tab-item').forEach(tab => {
-            tab.addEventListener('click', () => {
-                const tabName = tab.dataset.tab;
-                this.switchTab(tabName);
-            });
-        });
+  /**
+   * 处理接收到的文件块
+   */
+  handleChunk(fileId, chunk, chunkIndex, totalChunks) {
+    let task = this.transfers.get(fileId);
+    
+    if (!task) {
+      console.warn('Unknown file transfer:', fileId);
+      return;
     }
 
-    switchTab(tabName) {
-        document.querySelectorAll('.tab-item').forEach(item => {
-            item.classList.remove('active');
-        });
-        
-        document.querySelectorAll('.tab-content').forEach(content => {
-            content.classList.remove('active');
-        });
+    if (task.status !== 'receiving') return;
 
-        const activeTab = document.querySelector(`.tab-item[data-tab="${tabName}"]`);
-        const activeContent = document.getElementById(`${tabName}-content`);
-        
-        if (activeTab) {
-            activeTab.classList.add('active');
-        }
-        if (activeContent) {
-            activeContent.classList.add('active');
-        }
+    task.chunks[chunkIndex] = chunk;
+    task.receivedBytes += chunk.byteLength;
+    task.currentChunk = Math.max(task.currentChunk, chunkIndex + 1);
+    task.progress = Math.round((task.currentChunk / totalChunks) * 100);
+
+    this.app.updateProgress(fileId, task.progress, task.receivedBytes);
+
+    // 内存检查
+    if (task.receivedBytes > this.MAX_MEMORY_SIZE) {
+      this.app.showToast('文件过大，内存不足', 'error');
+      task.status = 'error';
+      this.cleanupTask(fileId);
+      return;
+    }
+  }
+
+  /**
+   * 完成文件接收
+   */
+  completeReceive(fileId) {
+    const task = this.transfers.get(fileId);
+    if (!task || task.status !== 'receiving') return;
+
+    task.status = 'completed';
+
+    // 检查是否所有块都收到
+    const missingChunks = [];
+    for (let i = 0; i < task.totalChunks; i++) {
+      if (!task.chunks[i]) {
+        missingChunks.push(i);
+      }
     }
 
-    loadNickname() {
-        if (this.nickname) {
-            this.elements.nicknameInput.value = this.nickname;
-        }
+    if (missingChunks.length > 0) {
+      this.app.showToast('文件传输不完整，缺少数据块', 'error');
+      this.cleanupTask(fileId);
+      return;
     }
 
-    onFileTargetChange() {
-        if (this.elements.fileTargetSpecific && this.elements.fileTargetSpecific.checked) {
-            this.elements.fileTargetDevices.classList.remove('hidden');
-            this.renderTargetDevicesList('file');
-        } else {
-            this.elements.fileTargetDevices.classList.add('hidden');
-            this.selectedFileTargets.clear();
-        }
+    // 组装文件
+    const blob = new Blob(task.chunks);
+    this.app.addReceivedFile(task.fileName, task.fileSize, blob);
+    this.app.addToHistory('received', task.fileName, task.fileSize);
+    
+    this.app.updateProgress(fileId, 100, task.fileSize, '已完成');
+    this.app.showToast(`已接收: ${task.fileName}`, 'success');
+
+    this.app.notificationManager.show('收到新文件', {
+      body: `${task.senderName} 发送了 ${task.fileName}`
+    });
+
+    // 清理任务
+    setTimeout(() => this.cleanupTask(fileId), 2000);
+  }
+
+  /**
+   * 取消接收
+   */
+  cancelReceive(fileId) {
+    const task = this.transfers.get(fileId);
+    if (!task) return;
+
+    this.cleanupTask(fileId);
+    const progressItem = document.getElementById('progress-item-' + fileId);
+    if (progressItem) {
+      progressItem.remove();
     }
+  }
 
-    onMessageTargetChange() {
-        if (this.elements.messageTargetSpecific && this.elements.messageTargetSpecific.checked) {
-            this.elements.messageTargetDevices.classList.remove('hidden');
-            this.renderTargetDevicesList('message');
-        } else {
-            this.elements.messageTargetDevices.classList.add('hidden');
-            this.selectedMessageTargets.clear();
-        }
+  /**
+   * 清理任务，释放内存
+   */
+  cleanupTask(fileId) {
+    const task = this.transfers.get(fileId);
+    if (task) {
+      // 释放大块数据
+      if (task.chunks) {
+        task.chunks = [];
+      }
+      if (task.file) {
+        task.file = null;
+      }
+      this.transfers.delete(fileId);
     }
+  }
 
-    renderTargetDevicesList(type) {
-        const deviceList = type === 'file' ? this.elements.fileTargetDevicesList : this.elements.messageTargetDevicesList;
-        const selectedTargets = type === 'file' ? this.selectedFileTargets : this.selectedMessageTargets;
-
-        const deviceIds = Object.keys(this.devices).filter(id => id !== this.peerId);
-
-        if (deviceIds.length === 0) {
-            deviceList.innerHTML = '<div class="empty-tip">暂无可选择的设备</div>';
-            return;
-        }
-
-        const icons = ['💻', '📱', '📱', '📱', '📱', '💻', '📱', '💻'];
-
-        deviceList.innerHTML = deviceIds.map((id, index) => {
-            const device = this.devices[id];
-            const icon = device.nickname.includes('手机') ? '📱' :
-                         device.nickname.includes('电脑') ? '💻' :
-                         icons[index % icons.length];
-            const isSelected = selectedTargets.has(id);
-
-            return `
-                <div class="target-device-item ${isSelected ? 'selected' : ''}" data-device-id="${id}">
-                    <input type="checkbox" ${isSelected ? 'checked' : ''}>
-                    <span class="target-device-checkbox"></span>
-                    <span class="target-device-icon">${icon}</span>
-                    <span class="target-device-name">${device.nickname}</span>
-                </div>
-            `;
-        }).join('');
-
-        deviceList.querySelectorAll('.target-device-item').forEach(item => {
-            item.addEventListener('click', () => {
-                const deviceId = item.dataset.deviceId;
-                if (selectedTargets.has(deviceId)) {
-                    selectedTargets.delete(deviceId);
-                    item.classList.remove('selected');
-                    item.querySelector('input').checked = false;
-                } else {
-                    selectedTargets.add(deviceId);
-                    item.classList.add('selected');
-                    item.querySelector('input').checked = true;
-                }
-            });
-        });
+  /**
+   * 清理所有任务
+   */
+  cleanupAll() {
+    for (const fileId of this.transfers.keys()) {
+      this.cleanupTask(fileId);
     }
+  }
+}
 
-    generateRoomId() {
-        const num = Math.floor(1000 + Math.random() * 9000);
-        return 'yan' + num;
-    }
+// ==========================================
+// 模块4: 连接管理器 (ConnectionManager)
+// ==========================================
+class ConnectionManager {
+  constructor(app) {
+    this.app = app;
+    this.peer = null;
+    this.connections = [];
+    this.heartbeatInterval = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 2000;
+    this.isReconnecting = false;
+  }
 
-    createRoom() {
-        this.roomId = this.generateRoomId();
-        this.isHost = true;
-        this.elements.roomId.textContent = this.roomId;
-        this.elements.roomDisplay.classList.remove('hidden');
-        this.elements.joinInputDisplay.classList.add('hidden');
-        this.elements.createRoomBtn.classList.add('hidden');
-        this.elements.joinRoomBtn.classList.add('hidden');
-        this.elements.confirmJoinBtn.classList.add('hidden');
-        this.elements.cancelJoinBtn.classList.add('hidden');
-        this.elements.disconnectBtn.classList.remove('hidden');
+  /**
+   * 初始化 Peer 连接
+   */
+  initPeer(customId = null) {
+    return new Promise((resolve, reject) => {
+      if (this.peer) {
+        this.peer.destroy();
+      }
 
-        this.updateConnectionStatus('waiting', '等待连接');
-        this.initPeer(this.roomId);
-    }
+      const peerConfig = {
+        debug: 1
+      };
 
-    showJoinForm() {
-        this.elements.roomDisplay.classList.add('hidden');
-        this.elements.joinInputDisplay.classList.remove('hidden');
-        this.elements.createRoomBtn.classList.add('hidden');
-        this.elements.joinRoomBtn.classList.add('hidden');
-        this.elements.confirmJoinBtn.classList.remove('hidden');
-        this.elements.cancelJoinBtn.classList.remove('hidden');
-        this.elements.roomIdInput.focus();
-    }
-
-    cancelJoin() {
-        this.elements.roomDisplay.classList.remove('hidden');
-        this.elements.joinInputDisplay.classList.add('hidden');
-        this.elements.createRoomBtn.classList.remove('hidden');
-        this.elements.joinRoomBtn.classList.remove('hidden');
-        this.elements.confirmJoinBtn.classList.add('hidden');
-        this.elements.cancelJoinBtn.classList.add('hidden');
-        this.elements.roomIdInput.value = '';
-    }
-
-    joinRoom() {
-        const inputRoomId = this.elements.roomIdInput.value.trim();
-        if (!inputRoomId) {
-            this.showToast('请输入房间号后4位', 'error');
-            return;
-        }
-
-        this.roomId = 'yan' + inputRoomId;
-        this.isHost = false;
-        this.elements.roomId.textContent = this.roomId;
-        this.elements.roomDisplay.classList.remove('hidden');
-        this.elements.joinInputDisplay.classList.add('hidden');
-        this.elements.createRoomBtn.classList.add('hidden');
-        this.elements.joinRoomBtn.classList.add('hidden');
-        this.elements.confirmJoinBtn.classList.add('hidden');
-        this.elements.cancelJoinBtn.classList.add('hidden');
-        this.elements.disconnectBtn.classList.remove('hidden');
-
-        this.updateConnectionStatus('waiting', '正在连接...');
-        this.initPeer();
-    }
-
-    addMyDevice() {
-        this.devices[this.peerId] = {
-            id: this.peerId,
-            nickname: this.nickname,
-            joinedAt: Date.now()
-        };
-        this.renderDevicesList();
-    }
-
-    disconnect() {
-        if (!this.roomId) {
-            return;
-        }
-
-        this.connections.forEach(conn => {
-            if (conn.open) {
-                conn.close();
-            }
-        });
-        this.connections = [];
-
-        if (this.peer) {
-            this.peer.destroy();
-            this.peer = null;
-        }
-
-        this.roomId = null;
-        this.isHost = false;
-        this.devices = {};
-
-        // 清除所有缓冲数据
-        this.filesToSend = [];
-        this.receivedFiles = [];
-        this.receivedFileBlobs = {};
-        this.messages = [];
-        this.fileChunks = {};
-        this.transferHistory = [];
-        this.selectedFileTargets.clear();
-        this.selectedMessageTargets.clear();
-
-        this.elements.roomId.textContent = '------';
-        this.elements.roomDisplay.classList.remove('hidden');
-        this.elements.joinInputDisplay.classList.add('hidden');
-        this.elements.createRoomBtn.classList.remove('hidden');
-        this.elements.joinRoomBtn.classList.remove('hidden');
-        this.elements.confirmJoinBtn.classList.add('hidden');
-        this.elements.cancelJoinBtn.classList.add('hidden');
-        this.elements.disconnectBtn.classList.add('hidden');
-        this.elements.roomIdInput.value = '';
-
-        // 清除界面数据
-        this.elements.fileList.innerHTML = '';
-        this.elements.sendFilesBtn.classList.add('hidden');
-        this.elements.progressList.innerHTML = '';
-        this.elements.progressList.parentElement.classList.add('hidden');
-        this.renderReceivedFiles();
-        this.renderMessages();
-        this.renderHistory();
-
-        this.renderDevicesList();
-        this.updateConnectionStatus('waiting', '等待连接');
-        this.switchTab('settings'); // 断开后返回设置页面
-        this.showToast('已断开连接', 'success');
-    }
-
-    addDevice(deviceId, nickname) {
-        this.devices[deviceId] = {
-            id: deviceId,
-            nickname: nickname,
-            joinedAt: Date.now()
-        };
-        this.renderDevicesList();
-        this.refreshTargetDeviceLists();
-
-        const otherDevicesCount = Object.keys(this.devices).length - 1;
-        if (otherDevicesCount > 0) {
-            this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
-        }
-
-        if (this.isHost) {
-            this.broadcastNewDevice(deviceId, nickname);
-        }
-
-        this.showToast(`${nickname} 加入了房间`, 'success');
-    }
-
-    broadcastNewDeviceImmediate(deviceId, nickname) {
-        const notifyMessage = {
-            type: 'new-device',
-            deviceId: deviceId,
-            nickname: nickname,
-            existingDevices: []
-        };
-
-        this.connections.forEach(conn => {
-            if (conn.open && conn.peer !== deviceId) {
-                conn.send(notifyMessage);
-            }
-        });
-    }
-
-    broadcastNewDevice(deviceId, nickname) {
-        const otherDeviceIds = Object.keys(this.devices).filter(id => id !== deviceId && id !== this.peerId);
-
-        const newDeviceInfo = {
-            type: 'new-device',
-            deviceId: deviceId,
-            nickname: nickname,
-            existingDevices: otherDeviceIds.map(id => ({
-                deviceId: id,
-                nickname: this.devices[id]?.nickname || '匿名'
-            }))
-        };
-
-        const notifyExistingDevices = {
-            type: 'new-device',
-            deviceId: deviceId,
-            nickname: nickname,
-            existingDevices: []
-        };
-
-        this.connections.forEach(conn => {
-            if (conn.open) {
-                if (conn.peer === deviceId) {
-                    conn.send(newDeviceInfo);
-                } else if (otherDeviceIds.includes(conn.peer)) {
-                    conn.send(notifyExistingDevices);
-                }
-            }
-        });
-    }
-
-    removeDevice(deviceId) {
-        if (this.devices[deviceId]) {
-            const nickname = this.devices[deviceId].nickname;
-            delete this.devices[deviceId];
-            this.renderDevicesList();
-            this.refreshTargetDeviceLists();
-            this.showToast(`${nickname} 已离开`, 'success');
-            
-            if (this.isHost) {
-                this.broadcast({
-                    type: 'device-left',
-                    deviceId: deviceId,
-                    nickname: nickname
-                });
-            }
-        }
-
-        this.connections = this.connections.filter(c => c.peer !== deviceId);
-
-        // 只有在还有其他连接时才更新状态
-        const otherDevicesCount = Object.keys(this.devices).length - 1;
-        if (otherDevicesCount > 0) {
-            this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
-        }
-    }
-
-    refreshTargetDeviceLists() {
-        const isFileTargetExpanded = this.elements.fileTargetSpecific && this.elements.fileTargetSpecific.checked;
-        const isMessageTargetExpanded = this.elements.messageTargetSpecific && this.elements.messageTargetSpecific.checked;
-
-        if (isFileTargetExpanded) {
-            this.renderTargetDevicesList('file');
-        }
-        if (isMessageTargetExpanded) {
-            this.renderTargetDevicesList('message');
-        }
-    }
-
-    renderDevicesList() {
-        let deviceIds = Object.keys(this.devices).filter(id => id !== this.peerId);
-        
-        if (this.isHost) {
-            deviceIds = deviceIds.filter(id => id !== this.roomId);
-        }
-        
-        if (deviceIds.length === 0) {
-            this.elements.devicesList.classList.add('hidden');
-            return;
-        }
-
-        this.elements.devicesList.classList.remove('hidden');
-
-        const icons = ['💻', '📱', '📱', '📱', '📱', '💻', '📱', '💻'];
-        
-        this.elements.devicesListContent.innerHTML = deviceIds.map((id, index) => {
-            const device = this.devices[id];
-            const icon = device.nickname.includes('手机') ? '📱' : 
-                         device.nickname.includes('电脑') ? '💻' : 
-                         icons[index % icons.length];
-            return `
-                <div class="device-item">
-                    <span class="device-icon">${icon}</span>
-                    <span class="device-name">${device.nickname}</span>
-                    <span class="device-status"></span>
-                </div>
-            `;
-        }).join('');
-    }
-
-    initPeer(customId = null) {
-        if (this.peer) {
-            this.peer.destroy();
-        }
-
-        const peerConfig = {
-            debug: 1
-        };
-
-        if (customId) {
-            peerConfig.id = customId;
-        }
-
+      try {
         this.peer = new Peer(customId, peerConfig);
 
         this.peer.on('open', (id) => {
-            this.peerId = id;
-
-            if (this.isHost) {
-                this.devices[this.peerId] = {
-                    id: this.peerId,
-                    nickname: this.nickname,
-                    joinedAt: Date.now()
-                };
-                this.renderDevicesList();
-                this.updateConnectionStatus('waiting', '等待连接');
-                this.showToast('房间创建成功', 'success');
-            } else {
-                this.devices[this.peerId] = {
-                    id: this.peerId,
-                    nickname: this.nickname,
-                    joinedAt: Date.now()
-                };
-                this.renderDevicesList();
-                setTimeout(() => this.connectToRoom(this.roomId), 500);
-            }
+          this.app.peerId = id;
+          this.reconnectAttempts = 0;
+          this.startHeartbeat();
+          resolve(id);
         });
 
         this.peer.on('connection', (conn) => {
-            this.handleNewConnection(conn);
+          this.handleNewConnection(conn);
         });
 
         this.peer.on('error', (err) => {
-            console.error('Peer error:', err);
-            if (err.type === 'unavailable-id') {
-                this.showToast('房间号已被占用', 'error');
-                this.updateConnectionStatus('error', '房间号无效');
-            } else if (err.type === 'peer-unavailable') {
-                this.showToast('房间不存在', 'error');
-                this.updateConnectionStatus('error', '连接失败');
-            } else {
-                this.showToast('连接错误', 'error');
-            }
+          console.error('Peer error:', err);
+          this.handlePeerError(err);
+          reject(err);
         });
 
         this.peer.on('disconnected', () => {
-            this.stopHeartbeat();
-            this.disconnect();
+          console.log('Peer disconnected');
+          this.handleDisconnect();
         });
 
-        this.heartbeatInterval = null;
-    }
-
-    startHeartbeat() {
-        this.stopHeartbeat();
-        this.heartbeatInterval = setInterval(() => {
-            const openConnections = this.connections.filter(c => c.open);
-            openConnections.forEach(conn => {
-                if (conn.peer !== this.peerId) {
-                    conn.send({ type: 'heartbeat', time: Date.now() });
-                }
-            });
-        }, 10000);
-    }
-
-    stopHeartbeat() {
-        if (this.heartbeatInterval) {
-            clearInterval(this.heartbeatInterval);
-            this.heartbeatInterval = null;
-        }
-    }
-
-    connectToRoom(roomId) {
-        const conn = this.peer.connect(roomId, {
-            reliable: true,
-            metadata: { nickname: this.nickname }
+        this.peer.on('close', () => {
+          console.log('Peer closed');
+          this.stopHeartbeat();
         });
+      } catch (error) {
+        console.error('Failed to init peer:', error);
+        reject(error);
+      }
+    });
+  }
 
-        conn.on('open', () => {
-            this.handleNewConnection(conn);
-        });
+  /**
+   * 处理新连接
+   */
+  handleNewConnection(conn) {
+    this.connections.push(conn);
 
-        conn.on('error', (err) => {
-            console.error('Connection error:', err);
-            this.showToast('连接失败', 'error');
-        });
-    }
+    conn.on('open', () => {
+      console.log('Connection opened with:', conn.peer);
+      this.app.pendingConnections.add(conn.peer);
 
-    handleNewConnection(conn) {
-        this.connections.push(conn);
-
-        conn.on('open', () => {
-            this.pendingConnections.add(conn.peer);
-
-            if (!this.isHost && this.roomId && conn.peer === this.roomId) {
-                this.devices[this.roomId] = {
-                    id: this.roomId,
-                    nickname: '房主',
-                    joinedAt: Date.now()
-                };
-                this.renderDevicesList();
-                const otherDevicesCount = Object.keys(this.devices).length - 1;
-                if (otherDevicesCount > 0) {
-                    this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
-                } else {
-                    this.updateConnectionStatus('connected', '已连接');
-                }
-                this.connectToAllDevices();
-                setTimeout(() => {
-                    conn.send({ type: 'request-devices', from: this.peerId });
-                }, 300);
-            }
-
-            if (this.isHost && conn.peer !== this.peerId) {
-                const nicknameFromMeta = conn.metadata?.nickname || '匿名';
-                if (!this.devices[conn.peer]) {
-                    this.devices[conn.peer] = {
-                        id: conn.peer,
-                        nickname: nicknameFromMeta,
-                        joinedAt: Date.now()
-                    };
-                    this.renderDevicesList();
-                    this.broadcastNewDeviceImmediate(conn.peer, nicknameFromMeta);
-                }
-                const otherDevicesCount = Object.keys(this.devices).length - 1;
-                if (otherDevicesCount > 0) {
-                    this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
-                }
-            }
-
-            this.sendNickname(conn);
-            this.startHeartbeat();
-
-            setTimeout(() => {
-                if (this.pendingConnections.has(conn.peer)) {
-                    this.pendingConnections.delete(conn.peer);
-                    if (!this.devices[conn.peer]) {
-                        this.connections = this.connections.filter(c => c.peer !== conn.peer);
-                    }
-                }
-            }, 10000);
-        });
-
-        conn.on('data', (data) => {
-            if (data.type === 'nickname') {
-                this.pendingConnections.delete(conn.peer);
-
-                const wasNewDevice = !this.devices[conn.peer];
-                this.devices[conn.peer] = {
-                    id: conn.peer,
-                    nickname: data.nickname,
-                    joinedAt: this.devices[conn.peer]?.joinedAt || Date.now()
-                };
-                this.renderDevicesList();
-                this.refreshTargetDeviceLists();
-
-                const otherDevicesCount = Object.keys(this.devices).length - 1;
-                if (otherDevicesCount > 0) {
-                    this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
-                }
-
-                if (wasNewDevice) {
-                    this.showToast(`${data.nickname} 加入了房间`, 'success');
-                    if (this.isHost) {
-                        setTimeout(() => this.broadcastNewDevice(conn.peer, data.nickname), 500);
-                    }
-                }
-            } else if (data.type === 'request-devices') {
-                if (this.isHost) {
-                    const devicesList = Object.keys(this.devices)
-                        .filter(id => id !== this.peerId && id !== data.from)
-                        .map(id => ({
-                            deviceId: id,
-                            nickname: this.devices[id]?.nickname || '匿名'
-                        }));
-                    conn.send({
-                        type: 'devices-list',
-                        devices: devicesList
-                    });
-                }
-            } else if (data.type === 'new-device') {
-                this.handleNewDevice(data);
-            } else {
-                this.handleData(data, conn);
-            }
-        });
-
-        conn.on('close', () => {
-            this.pendingConnections.delete(conn.peer);
-            this.removeDevice(conn.peer);
-            const openConnections = this.connections.filter(c => c.open && c.peer !== conn.peer);
-            if (openConnections.length === 0) {
-                // 所有连接都断开了，完全重置
-                this.stopHeartbeat();
-                this.disconnect();
-            }
-        });
-
-        conn.on('error', (err) => {
-            console.error('Connection error:', err);
-        });
-    }
-
-    sendNickname(conn = null) {
-        const message = {
-            type: 'nickname',
-            nickname: this.nickname,
-            from: this.peerId
+      if (!this.app.isHost && this.app.roomId && conn.peer === this.app.roomId) {
+        this.app.devices[this.app.roomId] = {
+          id: this.app.roomId,
+          nickname: '房主',
+          joinedAt: Date.now()
         };
-
-        if (conn) {
-            conn.send(message);
-        } else {
-            this.broadcast(message);
-        }
-    }
-
-    broadcast(data) {
-        const openConnections = this.connections.filter(c => c.open);
-
-        Object.keys(this.devices).forEach(deviceId => {
-            if (deviceId !== this.peerId) {
-                const conn = openConnections.find(c => c.peer === deviceId);
-                if (conn) {
-                    conn.send(data);
-                } else {
-                    this.connectAndSend(deviceId, data);
-                }
-            }
-        });
-    }
-
-    broadcastExcept(excludePeerId, data) {
-        this.connections.forEach(conn => {
-            if (conn.open && conn.peer !== excludePeerId) {
-                conn.send(data);
-            }
-        });
-    }
-
-    sendToTargets(targets, data) {
-        if (targets.size === 0) {
-            return false;
-        }
-
-        let sentCount = 0;
-        targets.forEach(deviceId => {
-            let conn = this.connections.find(c => c.peer === deviceId && c.open);
-
-            if (conn) {
-                conn.send(data);
-                sentCount++;
-            } else {
-                this.connectAndSend(deviceId, data);
-            }
-        });
-
-        return sentCount > 0;
-    }
-
-    connectAndSend(deviceId, data) {
-        if (this.peer && deviceId !== this.peerId) {
-            const conn = this.peer.connect(deviceId, {
-                reliable: true,
-                metadata: { nickname: this.nickname }
-            });
-
-            this.connections.push(conn);
-
-            conn.on('open', () => {
-                conn.send(data);
-                this.showToast('连接已建立', 'success');
-            });
-
-            conn.on('error', (err) => {
-                console.error('连接错误:', err);
-            });
-        }
-    }
-
-    onPeerConnected(deviceId) {
-        const otherDevicesCount = Object.keys(this.devices).length - 1;
-        if (otherDevicesCount > 0) {
-            this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
-        }
-    }
-
-    updateConnectionStatus(status, message) {
-        this.elements.connectionStatus.textContent = message;
-        this.elements.connectionStatus.className = 'status ' + status;
-        
-        // 连接成功后自动切换到文件发送页面
-        if (status === 'connected') {
-            this.switchTab('file');
-        }
-    }
-
-    handleFileSelect(e) {
-        const files = Array.from(e.target.files);
-        this.addFilesToQueue(files);
-    }
-
-    handleFileDrop(files) {
-        this.addFilesToQueue(Array.from(files));
-    }
-
-    addFilesToQueue(files) {
-        files.forEach(file => {
-            if (!this.filesToSend.find(f => f.name === file.name && f.size === file.size)) {
-                this.filesToSend.push(file);
-            }
-        });
-        this.renderFileList();
-        this.elements.sendFilesBtn.classList.remove('hidden');
-    }
-
-    renderFileList() {
-        this.elements.fileList.innerHTML = this.filesToSend.map((file, index) => `
-            <div class="file-item" data-index="${index}">
-                <div class="file-info">
-                    <span class="file-icon">${this.getFileIcon(file.name)}</span>
-                    <div class="file-details">
-                        <span class="file-name">${file.name}</span>
-                        <span class="file-size">${this.formatFileSize(file.size)}</span>
-                    </div>
-                </div>
-                <button class="file-remove">×</button>
-            </div>
-        `).join('');
-
-        this.initFileListEvents();
-    }
-
-    initFileListEvents() {
-        this.elements.fileList.addEventListener('click', (e) => {
-            const removeBtn = e.target.closest('.file-remove');
-            if (removeBtn) {
-                const fileItem = removeBtn.closest('.file-item');
-                const index = parseInt(fileItem.dataset.index, 10);
-                if (!isNaN(index) && index >= 0 && index < this.filesToSend.length) {
-                    this.removeFile(index);
-                }
-            }
-        });
-    }
-
-    removeFile(index) {
-        this.filesToSend.splice(index, 1);
-        this.renderFileList();
-        if (this.filesToSend.length === 0) {
-            this.elements.sendFilesBtn.classList.add('hidden');
-        }
-    }
-
-    sendFiles() {
-        if (this.filesToSend.length === 0) {
-            this.showToast('请选择文件', 'error');
-            return;
-        }
-
-        if (this.connections.length === 0 || !this.connections.some(c => c.open)) {
-            this.showToast('未连接', 'error');
-            return;
-        }
-
-        const isSpecificTarget = this.elements.fileTargetSpecific && this.elements.fileTargetSpecific.checked;
-        if (isSpecificTarget && this.selectedFileTargets.size === 0) {
-            this.showToast('请选择接收设备', 'error');
-            return;
-        }
-
-        this.elements.progressList.innerHTML = '';
-        this.fileChunks = {};
-
-        this.filesToSend.forEach(file => {
-            this.sendFile(file, isSpecificTarget ? this.selectedFileTargets : null);
-        });
-
-        this.filesToSend = [];
-        this.renderFileList();
-    }
-
-    sendFile(file, targets = null) {
-        const fileId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-        const fileSize = file.size;
-        const totalChunks = Math.ceil(fileSize / this.CHUNK_SIZE);
-        const sendMethod = targets ? (data) => this.sendToTargets(targets, data) : (data) => this.broadcast(data);
-
-        sendMethod({
-            type: 'file-meta',
-            fileId: fileId,
-            fileName: file.name,
-            fileSize: fileSize,
-            totalChunks: totalChunks,
-            senderName: this.nickname || '匿名'
-        });
-
-        this.addProgressItem(fileId, file.name, fileSize);
-
-        let currentChunk = 0;
-        let lastProgressTime = Date.now();
-
-        const sendNext = () => {
-            if (this.fileChunks[fileId] && this.fileChunks[fileId].cancelled) {
-                sendMethod({
-                    type: 'file-cancelled',
-                    fileId: fileId,
-                    fileName: file.name
-                });
-                
-                const progressItem = document.getElementById('progress-item-' + fileId);
-                if (progressItem) {
-                    progressItem.remove();
-                }
-                delete this.fileChunks[fileId];
-                this.showToast('已取消发送', 'error');
-                return;
-            }
-
-            if (currentChunk >= totalChunks) {
-                sendMethod({
-                    type: 'file-complete',
-                    fileId: fileId,
-                    fileSize: fileSize
-                });
-
-                this.updateProgress(fileId, 100, fileSize, '已完成');
-                this.addToHistory('sent', file.name, fileSize);
-                
-                // 发送的文件也添加到列表中 - 直接使用原始 File 对象
-                this.addReceivedFile(file.name, file.size, file);
-                
-                this.showToast(`已发送: ${file.name}`, 'success');
-                return;
-            }
-
-            const start = currentChunk * this.CHUNK_SIZE;
-            const end = Math.min(start + this.CHUNK_SIZE, fileSize);
-            const chunkData = file.slice(start, end);
-
-            if (chunkData.size === 0) {
-                currentChunk = totalChunks;
-                sendMethod({
-                    type: 'file-complete',
-                    fileId: fileId,
-                    fileSize: fileSize
-                });
-                return;
-            }
-
-            sendMethod({
-                type: 'file-chunk',
-                fileId: fileId,
-                chunk: chunkData,
-                chunkIndex: currentChunk,
-                totalChunks: totalChunks
-            });
-
-            currentChunk++;
-
-            const now = Date.now();
-            if (now - lastProgressTime >= 100) {
-                const progress = Math.round((currentChunk / totalChunks) * 100);
-                const bytesSent = Math.min(currentChunk * this.CHUNK_SIZE, fileSize);
-                this.updateProgress(fileId, progress, bytesSent);
-                lastProgressTime = now;
-            }
-
-            if (currentChunk < totalChunks) {
-                setTimeout(sendNext, 5);
-            } else {
-                sendMethod({
-                    type: 'file-complete',
-                    fileId: fileId,
-                    fileSize: fileSize
-                });
-
-                this.updateProgress(fileId, 100, fileSize, '已完成');
-                this.addToHistory('sent', file.name, fileSize);
-                this.showToast(`已发送: ${file.name}`, 'success');
-            }
-        };
-
-        setTimeout(sendNext, 50);
-    }
-
-    sendMessage() {
-        const message = this.elements.messageInput.value.trim();
-        if (!message) {
-            this.showToast('请输入内容', 'error');
-            return;
-        }
-
-        if (this.connections.length === 0 || !this.connections.some(c => c.open)) {
-            this.showToast('未连接', 'error');
-            return;
-        }
-
-        const isSpecificTarget = this.elements.messageTargetSpecific && this.elements.messageTargetSpecific.checked;
-        if (isSpecificTarget && this.selectedMessageTargets.size === 0) {
-            this.showToast('请选择接收设备', 'error');
-            return;
-        }
-
-        const messageData = {
-            type: 'message',
-            content: message,
-            senderName: this.nickname || '我',
-            time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-        };
-
-        if (isSpecificTarget) {
-            this.sendToTargets(this.selectedMessageTargets, messageData);
-        } else {
-            this.broadcast(messageData);
-        }
-
-        this.addMessage(message, this.nickname || '我', 'sent', '刚刚');
-        this.elements.messageInput.value = '';
-    }
-
-    addMessage(content, sender, type, time) {
-        const msgObj = { content, sender, type, time };
-        this.messages.push(msgObj);
-        this.renderMessages();
-        this.scrollToBottom();
-    }
-
-    scrollToBottom() {
-        const messagesList = this.elements.messagesList;
-        messagesList.scrollTop = messagesList.scrollHeight;
-    }
-
-    renderMessages() {
-        if (this.messages.length === 0) {
-            this.elements.messagesList.innerHTML = '<p class="empty-tip">暂无消息</p>';
-            return;
-        }
-
-        this.elements.messagesList.innerHTML = this.messages.map(msg => `
-            <div class="message-item ${msg.type}">
-                <div class="message-sender">${msg.sender} · ${msg.time}</div>
-                <div class="message-content">${this.escapeHtml(msg.content)}</div>
-            </div>
-        `).join('');
-    }
-
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    handleData(data, conn = null) {
-        if (data.type === 'heartbeat') {
-            return;
-        } else if (data.type === 'devices-list') {
-            if (data.devices && Array.isArray(data.devices)) {
-                data.devices.forEach(dev => {
-                    if (dev.deviceId !== this.peerId && !this.devices[dev.deviceId]) {
-                        this.devices[dev.deviceId] = {
-                            id: dev.deviceId,
-                            nickname: dev.nickname,
-                            joinedAt: Date.now()
-                        };
-                    }
-                });
-                this.renderDevicesList();
-                this.refreshTargetDeviceLists();
-                if (!this.isHost) {
-                    this.connectToAllDevices();
-                }
-            }
-        } else if (data.type === 'new-device') {
-            this.handleNewDevice(data);
-        } else if (data.type === 'device-left') {
-            if (this.devices[data.deviceId]) {
-                delete this.devices[data.deviceId];
-                this.renderDevicesList();
-                this.refreshTargetDeviceLists();
-                this.showToast(`${data.nickname} 已离开`, 'success');
-            }
-            this.connections = this.connections.filter(c => c.peer !== data.deviceId);
-            const otherDevicesCount = Object.keys(this.devices).length - 1;
-            if (otherDevicesCount <= 0) {
-                // 所有设备都离开了，完全重置
-                this.disconnect();
-            } else {
-                this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
-            }
-        } else if (data.type === 'file-meta') {
-            this.receiveFileMeta(data);
-        } else if (data.type === 'file-chunk') {
-            this.receiveFileChunk(data);
-        } else if (data.type === 'file-complete') {
-            this.completeFileReceive(data);
-        } else if (data.type === 'file-cancelled') {
-            this.handleFileCancelled(data);
-        } else if (data.type === 'message') {
-            this.receiveMessage(data);
-        }
-    }
-
-    handleNewDevice(data) {
-        const { deviceId, nickname, existingDevices } = data;
-
-        if (deviceId === this.peerId) return;
-
-        if (!this.devices[deviceId]) {
-            this.devices[deviceId] = {
-                id: deviceId,
-                nickname: nickname,
-                joinedAt: Date.now()
-            };
-            this.renderDevicesList();
-            this.refreshTargetDeviceLists();
-        }
-
-        if (existingDevices && Array.isArray(existingDevices)) {
-            existingDevices.forEach(dev => {
-                if (dev.deviceId !== this.peerId && !this.devices[dev.deviceId]) {
-                    this.devices[dev.deviceId] = {
-                        id: dev.deviceId,
-                        nickname: dev.nickname,
-                        joinedAt: Date.now()
-                    };
-                }
-            });
-            this.renderDevicesList();
-            this.refreshTargetDeviceLists();
-        }
-
-        if (!this.isHost) {
-            this.connectToAllDevices();
-        }
-    }
-
-    connectToDevice(deviceId) {
-        if (this.peer && deviceId !== this.peerId) {
-            const conn = this.peer.connect(deviceId, {
-                reliable: true,
-                metadata: { nickname: this.nickname }
-            });
-
-            this.connections.push(conn);
-
-            conn.on('open', () => {
-                this.sendNickname(conn);
-                if (!this.isHost) {
-                    this.connectToAllDevices();
-                }
-            });
-
-            conn.on('data', (data) => {
-                if (data.type === 'nickname') {
-                    this.pendingConnections.delete(conn.peer);
-                    const isNewDevice = !this.devices[conn.peer];
-                    this.devices[conn.peer] = {
-                        id: conn.peer,
-                        nickname: data.nickname,
-                        joinedAt: this.devices[conn.peer]?.joinedAt || Date.now()
-                    };
-                    if (isNewDevice) {
-                        this.onPeerConnected(conn.peer);
-                        this.renderDevicesList();
-                        this.refreshTargetDeviceLists();
-                        const otherDevicesCount = Object.keys(this.devices).length - 1;
-                        if (otherDevicesCount > 0) {
-                            this.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
-                        }
-                        this.showToast(`${data.nickname} 加入了房间`, 'success');
-                    } else {
-                        this.renderDevicesList();
-                    }
-                } else if (data.type === 'new-device') {
-                    this.handleNewDevice(data);
-                } else {
-                    this.handleData(data, conn);
-                }
-            });
-
-            conn.on('close', () => {
-                this.pendingConnections.delete(conn.peer);
-                this.removeDevice(conn.peer);
-                const openConnections = this.connections.filter(c => c.open && c.peer !== conn.peer);
-                if (openConnections.length === 0) {
-                    this.stopHeartbeat();
-                    this.updateConnectionStatus('disconnected', '连接断开');
-                }
-            });
-
-            conn.on('error', (err) => {
-                console.error('Connection error:', err);
-            });
-        }
-    }
-
-    connectToAllDevices() {
-        Object.keys(this.devices).forEach(deviceId => {
-            if (deviceId !== this.peerId) {
-                if (!this.connections.some(c => c.peer === deviceId && c.open)) {
-                    this.connectToDevice(deviceId);
-                }
-            }
-        });
-    }
-
-    receiveFileMeta(data) {
-        const { fileId, fileName, fileSize, totalChunks, senderName } = data;
-
-        if (this.fileChunks[fileId]) {
-            return;
-        }
-
-        this.fileChunks[fileId] = {
-            fileName: fileName,
-            fileSize: fileSize,
-            totalChunks: totalChunks,
-            chunks: {},
-            receivedChunks: 0,
-            autoStart: true,
-            cancelled: false
-        };
-
-        this.addProgressItem(fileId, fileName, fileSize);
-        this.showToast(`收到文件: ${fileName}`, 'success');
-    }
-
-    receiveFileChunk(data) {
-        const { fileId, chunk, chunkIndex, totalChunks } = data;
-
-        if (!this.fileChunks[fileId]) {
-            return;
-        }
-
-        const fileData = this.fileChunks[fileId];
-
-        if (fileData.chunks[chunkIndex]) {
-            return;
-        }
-
-        fileData.chunks[chunkIndex] = chunk;
-        fileData.receivedChunks++;
-
-        const progress = Math.round((fileData.receivedChunks / totalChunks) * 100);
-        const bytesReceived = Math.min(fileData.receivedChunks * this.CHUNK_SIZE, fileData.fileSize);
-
-        this.updateProgress(fileId, progress, bytesReceived);
-    }
-
-    receiveMessage(data) {
-        const { content, senderName, time } = data;
-        this.peerNickname = senderName;
-        if (this.elements.peerNickname) {
-            this.elements.peerNickname.textContent = senderName;
-        }
-        this.addMessage(content, senderName, 'received', time);
-    }
-
-    completeFileReceive(data) {
-        const fileId = data.fileId;
-        const fileSize = data.fileSize;
-        const fileData = this.fileChunks[fileId];
-
-        if (!fileData) return;
-
-        fileData.fileSize = fileSize;
-
+        this.app.renderDevicesList();
+        this.app.connectToAllDevices();
         setTimeout(() => {
-            const totalChunks = fileData.totalChunks || Math.ceil(fileSize / this.CHUNK_SIZE);
-
-            if (fileData.receivedChunks >= totalChunks) {
-                this.processReceivedChunk(fileId, 0);
-            } else {
-                setTimeout(() => {
-                    this.processReceivedChunk(fileId, 0);
-                }, 200);
-            }
+          conn.send({ type: 'request-devices', from: this.app.peerId });
         }, 300);
-    }
+      }
 
-    handleFileCancelled(data) {
-        const { fileId, fileName } = data;
-        
-        if (this.fileChunks[fileId]) {
-            const progressItem = document.getElementById('progress-item-' + fileId);
-            if (progressItem) {
-                progressItem.remove();
-            }
-            delete this.fileChunks[fileId];
+      if (this.app.isHost && conn.peer !== this.app.peerId) {
+        const nicknameFromMeta = conn.metadata?.nickname || '匿名';
+        if (!this.app.devices[conn.peer]) {
+          this.app.devices[conn.peer] = {
+            id: conn.peer,
+            nickname: nicknameFromMeta,
+            joinedAt: Date.now()
+          };
+          this.app.renderDevicesList();
+          this.app.broadcastNewDeviceImmediate(conn.peer, nicknameFromMeta);
         }
-        
-        this.showToast(`${fileName} 已取消发送`, 'error');
+      }
+
+      this.app.sendNickname(conn);
+    });
+
+    conn.on('data', (data) => {
+      this.app.handleData(data, conn);
+    });
+
+    conn.on('close', () => {
+      console.log('Connection closed with:', conn.peer);
+      this.app.pendingConnections.delete(conn.peer);
+      this.app.removeDevice(conn.peer);
+      this.connections = this.connections.filter(c => c !== conn);
+    });
+
+    conn.on('error', (err) => {
+      console.error('Connection error:', err);
+      this.app.showToast('连接错误', 'error');
+    });
+  }
+
+  /**
+   * 连接到房间
+   */
+  connectToRoom(roomId) {
+    try {
+      const conn = this.peer.connect(roomId, {
+        reliable: true,
+        metadata: { nickname: this.app.nickname }
+      });
+      this.handleNewConnection(conn);
+    } catch (error) {
+      console.error('Failed to connect to room:', error);
+      this.app.showToast('连接房间失败', 'error');
+    }
+  }
+
+  /**
+   * 连接到指定设备
+   */
+  connectToDevice(deviceId) {
+    const existingConn = this.connections.find(c => c.peer === deviceId && c.open);
+    if (existingConn) {
+      return existingConn;
     }
 
-    processReceivedChunk(fileId, chunkIndex) {
-        const fileData = this.fileChunks[fileId];
-        if (!fileData) return;
+    try {
+      const conn = this.peer.connect(deviceId, {
+        reliable: true,
+        metadata: { nickname: this.app.nickname }
+      });
+      this.handleNewConnection(conn);
+      return conn;
+    } catch (error) {
+      console.error('Failed to connect to device:', error);
+      return null;
+    }
+  }
 
-        const totalChunks = Math.ceil(fileData.fileSize / this.CHUNK_SIZE);
-        const chunks = [];
+  /**
+   * 处理 Peer 错误
+   */
+  handlePeerError(err) {
+    if (err.type === 'unavailable-id') {
+      this.app.showToast('房间号已被占用', 'error');
+      this.app.updateConnectionStatus('error', '房间号无效');
+    } else if (err.type === 'peer-unavailable') {
+      this.app.showToast('房间不存在', 'error');
+      this.app.updateConnectionStatus('error', '连接失败');
+    } else if (err.type === 'network') {
+      this.app.showToast('网络错误，尝试重连...', 'error');
+      this.attemptReconnect();
+    } else {
+      this.app.showToast('连接错误', 'error');
+    }
+  }
 
-        for (let i = 0; i < totalChunks; i++) {
-            if (fileData.chunks[i]) {
-                chunks.push(fileData.chunks[i]);
-            } else {
-                return;
-            }
-        }
+  /**
+   * 处理断开连接
+   */
+  handleDisconnect() {
+    this.stopHeartbeat();
+    if (this.app.roomId && !this.isReconnecting) {
+      this.attemptReconnect();
+    }
+  }
 
-        const blob = new Blob(chunks, { type: 'application/octet-stream' });
-        
-        this.updateProgress(fileId, 100, fileData.fileSize, '已下载');
-        this.addToHistory('received', fileData.fileName, fileData.fileSize, blob);
-        
-        // 添加到接收文件列表
-        this.addReceivedFile(fileData.fileName, fileData.fileSize, blob);
-        
-        this.showToast(`已下载: ${fileData.fileName}`, 'success');
-
-        delete this.fileChunks[fileId];
+  /**
+   * 尝试重连
+   */
+  async attemptReconnect() {
+    if (this.isReconnecting || this.reconnectAttempts >= this.maxReconnectAttempts) {
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        this.app.showToast('重连失败，请手动重新连接', 'error');
+        this.app.disconnect();
+      }
+      return;
     }
 
-    // 添加接收文件到列表
-    addReceivedFile(fileName, fileSize, blob) {
-        const fileId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-        this.receivedFiles.push({
-            id: fileId,
-            name: fileName,
-            size: fileSize,
-            blob: blob,
-            time: new Date().toLocaleString('zh-CN')
-        });
-        this.receivedFileBlobs[fileId] = blob;
-        this.renderReceivedFiles();
-    }
+    this.isReconnecting = true;
+    this.reconnectAttempts++;
+    this.app.updateConnectionStatus('reconnecting', `重连中 (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+    this.app.showToast(`尝试重连... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`, 'success');
 
-    // 渲染接收文件列表
-    renderReceivedFiles() {
-        if (this.receivedFiles.length === 0) {
-            this.elements.receivedFilesList.innerHTML = '<div class="empty-tip">暂无接收文件</div>';
-            return;
-        }
+    await Utils.delay(this.reconnectDelay * this.reconnectAttempts);
 
-        this.elements.receivedFilesList.innerHTML = this.receivedFiles.map((file) => `
-            <div class="file-item" onclick="app.openReceivedFile('${file.id}')">
-                <div class="file-info">
-                    <span class="file-icon">${this.getFileIcon(file.name)}</span>
-                    <div class="file-details">
-                        <span class="file-name">${file.name}</span>
-                        <span class="file-size">${this.formatFileSize(file.size)}</span>
-                    </div>
-                </div>
-            </div>
-        `).join('');
-    }
-
-    // 打开接收的文件
-    openReceivedFile(fileId) {
-        const blob = this.receivedFileBlobs[fileId];
-        const file = this.receivedFiles.find(f => f.id === fileId);
-        if (!blob || !file) return;
-        
-        // 直接使用下载方式，与历史记录保持一致
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = file.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        // 延迟释放，确保下载完成
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        
-        this.showToast(`正在下载: ${file.name}`, 'success');
-    }
-
-    addProgressItem(fileId, fileName, fileSize) {
-        document.querySelector('.progress-section').classList.remove('hidden');
-
-        const progressItem = document.createElement('div');
-        progressItem.className = 'progress-item';
-        progressItem.id = 'progress-item-' + fileId;
-        progressItem.innerHTML = `
-            <div class="progress-header">
-                <span class="progress-name" title="${fileName}">${fileName}</span>
-                <span class="progress-status" id="progress-status-${fileId}">0%</span>
-            </div>
-            <div class="progress-bar-container">
-                <div class="progress-bar" id="progress-bar-${fileId}" style="width: 0%"></div>
-            </div>
-            <div class="progress-details">
-                <div>
-                    <span id="progress-current-${fileId}">0 KB</span>
-                    <span id="progress-total-${fileId}"> / ${this.formatFileSize(fileSize)}</span>
-                </div>
-                <div class="progress-info">
-                    <span id="progress-speed-${fileId}" class="progress-speed"></span>
-                    <span id="progress-time-${fileId}" class="progress-time"></span>
-                </div>
-            </div>
-            <button class="btn-cancel" onclick="app.cancelFile('${fileId}')">取消</button>
-        `;
-        this.elements.progressList.appendChild(progressItem);
-
-        this.fileChunks[fileId] = {
-            ...(this.fileChunks[fileId] || {}),
-            startTime: Date.now(),
-            lastBytes: 0,
-            fileSize: fileSize,
-            cancelled: false
+    try {
+      if (this.app.isHost) {
+        await this.initPeer(this.app.roomId);
+        this.app.devices[this.app.peerId] = {
+          id: this.app.peerId,
+          nickname: this.app.nickname,
+          joinedAt: Date.now()
         };
-    }
-
-    cancelFile(fileId) {
-        if (this.fileChunks[fileId]) {
-            this.fileChunks[fileId].cancelled = true;
-        }
-    }
-
-    clearProgress() {
-        this.elements.progressList.innerHTML = '';
-        this.elements.progressList.parentElement.classList.add('hidden');
-        this.fileChunks = {};
-    }
-
-    updateProgress(fileId, percentage, currentSize, status = null) {
-        if (this.fileChunks[fileId] && this.fileChunks[fileId].cancelled) {
-            return;
-        }
-
-        const progressBar = document.getElementById('progress-bar-' + fileId);
-        const progressStatus = document.getElementById('progress-status-' + fileId);
-        const progressCurrent = document.getElementById('progress-current-' + fileId);
-        const progressSpeed = document.getElementById('progress-speed-' + fileId);
-        const progressTime = document.getElementById('progress-time-' + fileId);
-
-        if (progressBar) {
-            progressBar.style.width = percentage + '%';
-        }
-        if (progressStatus) {
-            progressStatus.textContent = status || percentage + '%';
-        }
-        if (progressCurrent) {
-            progressCurrent.textContent = this.formatFileSize(currentSize);
-        }
-
-        const fileData = this.fileChunks[fileId];
-        if (fileData && progressSpeed && progressTime) {
-            const elapsed = (Date.now() - fileData.startTime) / 1000;
-            const bytesDiff = currentSize - fileData.lastBytes;
-
-            if (elapsed > 1 && bytesDiff > 0) {
-                const speed = Math.round(bytesDiff / elapsed);
-                progressSpeed.textContent = `${this.formatFileSize(speed)}/s`;
-
-                const remainingBytes = fileData.fileSize - currentSize;
-                const remainingTime = Math.round(remainingBytes / speed);
-                progressTime.textContent = `约剩${this.formatTime(remainingTime)}`;
-            }
-
-            fileData.lastBytes = currentSize;
-        }
-    }
-
-    formatTime(seconds) {
-        if (seconds < 60) {
-            return `${seconds}秒`;
-        } else if (seconds < 3600) {
-            return `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
-        } else {
-            return `${Math.floor(seconds / 3600)}时${Math.floor((seconds % 3600) / 60)}分`;
-        }
-    }
-
-    addToHistory(type, fileName, fileSize, fileData = null) {
-        const historyItem = {
-            type: type,
-            fileName: fileName,
-            fileSize: fileSize,
-            time: new Date().toLocaleString('zh-CN'),
-            fileData: fileData
+        this.app.renderDevicesList();
+        this.app.updateConnectionStatus('waiting', '等待连接');
+        this.app.showToast('重连成功！', 'success');
+      } else {
+        await this.initPeer();
+        this.app.devices[this.app.peerId] = {
+          id: this.app.peerId,
+          nickname: this.app.nickname,
+          joinedAt: Date.now()
         };
+        this.app.renderDevicesList();
+        setTimeout(() => this.connectToRoom(this.app.roomId), 500);
+      }
+      this.isReconnecting = false;
+    } catch (error) {
+      console.error('Reconnect failed:', error);
+      this.isReconnecting = false;
+      this.attemptReconnect();
+    }
+  }
 
-        this.transferHistory.unshift(historyItem);
-        if (this.transferHistory.length > 20) {
-            this.transferHistory.shift();
+  /**
+   * 启动心跳
+   */
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeatInterval = setInterval(() => {
+      const openConnections = this.connections.filter(c => c.open);
+      openConnections.forEach(conn => {
+        if (conn.peer !== this.app.peerId) {
+          try {
+            conn.send({ type: 'heartbeat', time: Date.now() });
+          } catch (e) {
+            console.warn('Failed to send heartbeat:', e);
+          }
         }
+      });
+    }, 10000);
+  }
 
-        this.renderHistory();
+  /**
+   * 停止心跳
+   */
+  stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
     }
+  }
 
-    renderHistory() {
-        if (this.transferHistory.length === 0) {
-            this.elements.transferHistory.innerHTML = '<div class="empty-tip">暂无记录</div>';
-            return;
-        }
-
-        this.elements.transferHistory.innerHTML = this.transferHistory.map((item, index) => `
-            <div class="history-item" onclick="app.viewHistoryFile(${index})">
-                <div class="history-info">
-                    <span class="history-type ${item.type}">${item.type === 'sent' ? '发送' : '接收'}</span>
-                    <span class="history-name" title="${item.fileName}">${item.fileName}</span>
-                </div>
-                <span class="history-size">${this.formatFileSize(item.fileSize)}</span>
-            </div>
-        `).join('');
+  /**
+   * 断开所有连接
+   */
+  disconnectAll() {
+    this.stopHeartbeat();
+    this.connections.forEach(conn => {
+      if (conn.open) {
+        conn.close();
+      }
+    });
+    this.connections = [];
+    
+    if (this.peer) {
+      this.peer.destroy();
+      this.peer = null;
     }
-
-    viewHistoryFile(index) {
-        const item = this.transferHistory[index];
-        if (!item) return;
-        
-        if (item.type === 'received' && item.fileData) {
-            const url = URL.createObjectURL(item.fileData);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = item.fileName;
-            link.click();
-            URL.revokeObjectURL(url);
-            this.showToast(`正在打开: ${item.fileName}`, 'success');
-        } else if (item.type === 'sent') {
-            this.showToast('发送的文件无法从历史记录打开', 'error');
-        }
-    }
-
-    getFileIcon(fileName) {
-        const ext = fileName.split('.').pop().toLowerCase();
-        const icons = {
-            pdf: '📕', doc: '📘', docx: '📘',
-            xls: '📗', xlsx: '📗',
-            ppt: '📙', pptx: '📙',
-            jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', webp: '🖼️',
-            mp3: '🎵', wav: '🎵', ogg: '🎵', m4a: '🎵',
-            mp4: '🎬', avi: '🎬', mov: '🎬', mkv: '🎬', webm: '🎬',
-            zip: '📦', rar: '📦', '7z': '📦', tar: '📦', gz: '📦',
-            js: '📜', ts: '📜', py: '📜', java: '📜', c: '📜', cpp: '📜',
-            html: '🌐', css: '🌐',
-            json: '📋', xml: '📋',
-            txt: '📄', md: '📄'
-        };
-        return icons[ext] || '📁';
-    }
-
-    formatFileSize(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-    }
-
-    showToast(message, type = '') {
-        this.elements.toast.textContent = message;
-        this.elements.toast.className = 'toast ' + type;
-        this.elements.toast.classList.remove('hidden');
-
-        requestAnimationFrame(() => {
-            this.elements.toast.classList.add('show');
-        });
-
-        setTimeout(() => {
-            this.elements.toast.classList.remove('show');
-            setTimeout(() => {
-                this.elements.toast.classList.add('hidden');
-            }, 400);
-        }, 2800);
-    }
+    
+    this.reconnectAttempts = 0;
+    this.isReconnecting = false;
+  }
 }
 
+// ==========================================
+// 模块5: UI 控制器 (UIController)
+// ==========================================
+class UIController {
+  constructor(app) {
+    this.app = app;
+    this.elements = {};
+    this.initElements();
+    this.initEventListeners();
+  }
+
+  initElements() {
+    this.elements = {
+      nicknameInput: document.getElementById('nicknameInput'),
+      createRoomBtn: document.getElementById('createRoomBtn'),
+      joinRoomBtn: document.getElementById('joinRoomBtn'),
+      cancelJoinBtn: document.getElementById('cancelJoinBtn'),
+      disconnectBtn: document.getElementById('disconnectBtn'),
+      confirmJoinBtn: document.getElementById('confirmJoinBtn'),
+      roomDisplay: document.getElementById('roomDisplay'),
+      joinInputDisplay: document.getElementById('joinInputDisplay'),
+      roomId: document.getElementById('roomId'),
+      connectionStatus: document.getElementById('connectionStatus'),
+      roomIdInput: document.getElementById('roomIdInput'),
+      devicesList: document.getElementById('devicesList'),
+      devicesListContent: document.getElementById('devicesListContent'),
+      fileTargetRoom: document.querySelector('input[name="fileTarget"][value="room"]'),
+      fileTargetSpecific: document.querySelector('input[name="fileTarget"][value="specific"]'),
+      fileTargetDevices: document.getElementById('fileTargetDevices'),
+      fileTargetDevicesList: document.getElementById('fileTargetDevicesList'),
+      messageTargetRoom: document.querySelector('input[name="messageTarget"][value="room"]'),
+      messageTargetSpecific: document.querySelector('input[name="messageTarget"][value="specific"]'),
+      messageTargetDevices: document.getElementById('messageTargetDevices'),
+      messageTargetDevicesList: document.getElementById('messageTargetDevicesList'),
+      dropZone: document.getElementById('dropZone'),
+      fileInput: document.getElementById('fileInput'),
+      fileList: document.getElementById('fileList'),
+      sendFilesBtn: document.getElementById('sendFilesBtn'),
+      clearProgressBtn: document.getElementById('clearProgressBtn'),
+      messageInput: document.getElementById('messageInput'),
+      sendMessageBtn: document.getElementById('sendMessageBtn'),
+      messagesList: document.getElementById('messagesList'),
+      progressList: document.getElementById('progressList'),
+      progressSection: document.querySelector('.progress-section'),
+      transferHistory: document.getElementById('transferHistory'),
+      receivedFilesList: document.getElementById('receivedFilesList'),
+      toast: document.getElementById('toast')
+    };
+  }
+
+  initEventListeners() {
+    this.elements.createRoomBtn.addEventListener('click', () => this.app.createRoom());
+    this.elements.joinRoomBtn.addEventListener('click', () => this.showJoinForm());
+    this.elements.confirmJoinBtn.addEventListener('click', () => this.app.joinRoom());
+    this.elements.cancelJoinBtn.addEventListener('click', () => this.cancelJoin());
+    this.elements.disconnectBtn.addEventListener('click', () => this.app.disconnect());
+    
+    this.elements.roomIdInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') this.app.joinRoom();
+    });
+    
+    this.elements.roomIdInput.addEventListener('input', (e) => {
+      e.target.value = e.target.value.replace(/\D/g, '');
+    });
+
+    this.elements.fileInput.addEventListener('change', (e) => this.app.handleFileSelect(e));
+    this.elements.sendFilesBtn.addEventListener('click', () => this.app.sendFiles());
+    this.elements.clearProgressBtn.addEventListener('click', () => this.app.clearProgress());
+    this.elements.sendMessageBtn.addEventListener('click', () => this.app.sendMessage());
+
+    if (this.elements.fileTargetRoom) {
+      this.elements.fileTargetRoom.addEventListener('change', () => {
+        this.app.onFileTargetChange();
+      });
+    }
+    if (this.elements.fileTargetSpecific) {
+      this.elements.fileTargetSpecific.addEventListener('change', () => {
+        this.app.onFileTargetChange();
+      });
+    }
+    if (this.elements.messageTargetRoom) {
+      this.elements.messageTargetRoom.addEventListener('change', () => {
+        this.app.onMessageTargetChange();
+      });
+    }
+    if (this.elements.messageTargetSpecific) {
+      this.elements.messageTargetSpecific.addEventListener('change', () => {
+        this.app.onMessageTargetChange();
+      });
+    }
+
+    this.elements.dropZone.addEventListener('click', () => {
+      this.elements.fileInput.click();
+    });
+
+    this.elements.dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.elements.dropZone.classList.add('dragover');
+    });
+
+    this.elements.dropZone.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.elements.dropZone.classList.remove('dragover');
+    });
+
+    this.elements.dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.elements.dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) {
+        this.app.handleFileDrop(e.dataTransfer.files);
+      }
+    });
+
+    this.elements.nicknameInput.addEventListener('input', (e) => {
+      this.app.nickname = e.target.value.trim();
+      localStorage.setItem('nickname', this.app.nickname);
+    });
+
+    this.elements.messageInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.app.sendMessage();
+      }
+    });
+
+    document.querySelectorAll('.tab-item').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabName = tab.dataset.tab;
+        this.switchTab(tabName);
+      });
+    });
+  }
+
+  switchTab(tabName) {
+    document.querySelectorAll('.tab-item').forEach(item => {
+      item.classList.remove('active');
+    });
+    
+    document.querySelectorAll('.tab-content').forEach(content => {
+      content.classList.remove('active');
+    });
+
+    const activeTab = document.querySelector(`.tab-item[data-tab="${tabName}"]`);
+    const activeContent = document.getElementById(`${tabName}-content`);
+    
+    if (activeTab) {
+      activeTab.classList.add('active');
+    }
+    if (activeContent) {
+      activeContent.classList.add('active');
+    }
+  }
+
+  showJoinForm() {
+    this.elements.roomDisplay.classList.add('hidden');
+    this.elements.joinInputDisplay.classList.remove('hidden');
+    this.elements.createRoomBtn.classList.add('hidden');
+    this.elements.joinRoomBtn.classList.add('hidden');
+    this.elements.confirmJoinBtn.classList.remove('hidden');
+    this.elements.cancelJoinBtn.classList.remove('hidden');
+    this.elements.roomIdInput.focus();
+  }
+
+  cancelJoin() {
+    this.elements.roomDisplay.classList.remove('hidden');
+    this.elements.joinInputDisplay.classList.add('hidden');
+    this.elements.createRoomBtn.classList.remove('hidden');
+    this.elements.joinRoomBtn.classList.remove('hidden');
+    this.elements.confirmJoinBtn.classList.add('hidden');
+    this.elements.cancelJoinBtn.classList.add('hidden');
+    this.elements.roomIdInput.value = '';
+  }
+
+  showToast(message, type = 'success') {
+    this.elements.toast.textContent = message;
+    this.elements.toast.className = 'toast show ' + type;
+    
+    setTimeout(() => {
+      this.elements.toast.classList.remove('show');
+    }, 3000);
+  }
+
+  updateConnectionStatus(status, message) {
+    this.elements.connectionStatus.textContent = message;
+    this.elements.connectionStatus.className = 'status ' + status;
+    
+    if (status === 'connected') {
+      this.switchTab('file');
+    }
+  }
+
+  renderDevicesList(devices, peerId, isHost) {
+    let deviceIds = Object.keys(devices).filter(id => id !== peerId);
+    
+    if (isHost) {
+      deviceIds = deviceIds.filter(id => id !== this.app.roomId);
+    }
+    
+    if (deviceIds.length === 0) {
+      this.elements.devicesList.classList.add('hidden');
+      return;
+    }
+
+    this.elements.devicesList.classList.remove('hidden');
+
+    const icons = ['💻', '📱', '📱', '📱', '📱', '💻', '📱', '💻'];
+    
+    this.elements.devicesListContent.innerHTML = deviceIds.map((id, index) => {
+      const device = devices[id];
+      const icon = device.nickname.includes('手机') ? '📱' : 
+                   device.nickname.includes('电脑') ? '💻' : 
+                   icons[index % icons.length];
+      return `
+        <div class="device-item">
+          <span class="device-icon">${icon}</span>
+          <span class="device-name">${device.nickname}</span>
+          <span class="device-status"></span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  renderTargetDevicesList(type, devices, peerId, selectedTargets) {
+    const deviceList = type === 'file' 
+      ? this.elements.fileTargetDevicesList 
+      : this.elements.messageTargetDevicesList;
+
+    const deviceIds = Object.keys(devices).filter(id => id !== peerId);
+
+    if (deviceIds.length === 0) {
+      deviceList.innerHTML = '<div class="empty-tip">暂无可选择的设备</div>';
+      return;
+    }
+
+    const icons = ['💻', '📱', '📱', '📱', '📱', '💻', '📱', '💻'];
+
+    deviceList.innerHTML = deviceIds.map((id, index) => {
+      const device = devices[id];
+      const icon = device.nickname.includes('手机') ? '📱' :
+                   device.nickname.includes('电脑') ? '💻' :
+                   icons[index % icons.length];
+      const isSelected = selectedTargets.has(id);
+
+      return `
+        <div class="target-device-item ${isSelected ? 'selected' : ''}" data-device-id="${id}" data-type="${type}">
+          <input type="checkbox" ${isSelected ? 'checked' : ''}>
+          <span class="target-device-checkbox"></span>
+          <span class="target-device-icon">${icon}</span>
+          <span class="target-device-name">${device.nickname}</span>
+        </div>
+      `;
+    }).join('');
+
+    deviceList.querySelectorAll('.target-device-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const deviceId = item.dataset.deviceId;
+        const itemType = item.dataset.type;
+        const targets = itemType === 'file' 
+          ? this.app.selectedFileTargets 
+          : this.app.selectedMessageTargets;
+
+        if (targets.has(deviceId)) {
+          targets.delete(deviceId);
+          item.classList.remove('selected');
+          item.querySelector('input').checked = false;
+        } else {
+          targets.add(deviceId);
+          item.classList.add('selected');
+          item.querySelector('input').checked = true;
+        }
+      });
+    });
+  }
+
+  renderFileList(files) {
+    this.elements.fileList.innerHTML = files.map((file, index) => `
+      <div class="file-item" data-index="${index}">
+        <div class="file-info">
+          <span class="file-icon">${Utils.getFileIcon(file.name)}</span>
+          <div class="file-details">
+            <span class="file-name">${file.name}</span>
+            <span class="file-size">${Utils.formatFileSize(file.size)}</span>
+          </div>
+        </div>
+        <button class="file-remove">×</button>
+      </div>
+    `).join('');
+
+    this.elements.fileList.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('.file-remove');
+      if (removeBtn) {
+        const fileItem = removeBtn.closest('.file-item');
+        const index = parseInt(fileItem.dataset.index, 10);
+        if (!isNaN(index) && index >= 0 && index < files.length) {
+          this.app.removeFile(index);
+        }
+      }
+    });
+  }
+
+  addProgressItem(task) {
+    this.elements.progressSection.classList.remove('hidden');
+    
+    const progressItem = document.createElement('div');
+    progressItem.id = 'progress-item-' + task.fileId;
+    progressItem.className = 'progress-item';
+    progressItem.innerHTML = `
+      <div class="progress-header">
+        <span class="progress-name">${task.fileName}</span>
+        <span class="progress-status">准备中...</span>
+      </div>
+      <div class="progress-bar-container">
+        <div class="progress-bar" style="width: 0%"></div>
+      </div>
+      <div class="progress-details">
+        <span>0%</span>
+        <span>0 B / ${Utils.formatFileSize(task.fileSize)}</span>
+      </div>
+      <div class="progress-actions">
+        <button class="btn-pause" data-action="pause" data-id="${task.fileId}">⏸️ 暂停</button>
+        <button class="btn-cancel" data-action="cancel" data-id="${task.fileId}">❌ 取消</button>
+      </div>
+    `;
+
+    this.elements.progressList.appendChild(progressItem);
+
+    progressItem.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      
+      const action = btn.dataset.action;
+      const fileId = btn.dataset.id;
+      
+      if (action === 'pause') {
+        const task = this.app.fileTransfer.transfers.get(fileId);
+        if (task?.status === 'sending') {
+          this.app.fileTransfer.pauseTransfer(fileId);
+          btn.textContent = '▶️ 继续';
+          btn.dataset.action = 'resume';
+        } else if (task?.status === 'paused') {
+          this.app.fileTransfer.resumeTransfer(fileId);
+          btn.textContent = '⏸️ 暂停';
+          btn.dataset.action = 'pause';
+        }
+      } else if (action === 'cancel') {
+        this.app.fileTransfer.cancelTransfer(fileId);
+      }
+    });
+  }
+
+  updateProgress(fileId, progress, bytes, status = null) {
+    const item = document.getElementById('progress-item-' + fileId);
+    if (!item) return;
+
+    const progressBar = item.querySelector('.progress-bar');
+    const progressStatus = item.querySelector('.progress-status');
+    const progressDetails = item.querySelectorAll('.progress-details span');
+
+    if (progressBar) {
+      progressBar.style.width = progress + '%';
+    }
+
+    if (progressDetails.length >= 2) {
+      const task = this.app.fileTransfer.transfers.get(fileId);
+      progressDetails[0].textContent = progress + '%';
+      progressDetails[1].textContent = `${Utils.formatFileSize(bytes)}${task ? ' / ' + Utils.formatFileSize(task.fileSize) : ''}`;
+    }
+
+    if (status) {
+      progressStatus.textContent = status;
+    }
+  }
+
+  renderMessages(messages) {
+    if (messages.length === 0) {
+      this.elements.messagesList.innerHTML = '<p class="empty-tip">暂无消息</p>';
+      return;
+    }
+
+    this.elements.messagesList.innerHTML = messages.map(msg => `
+      <div class="message-item ${msg.type}">
+        <div class="message-sender">${msg.sender} · ${msg.time}</div>
+        <div class="message-content">${Utils.escapeHtml(msg.content)}</div>
+      </div>
+    `).join('');
+
+    this.scrollMessagesToBottom();
+  }
+
+  scrollMessagesToBottom() {
+    this.elements.messagesList.scrollTop = this.elements.messagesList.scrollHeight;
+  }
+
+  addMessage(msgObj) {
+    this.renderMessages(this.app.messages);
+    this.scrollMessagesToBottom();
+  }
+
+  renderReceivedFiles(files) {
+    if (files.length === 0) {
+      this.elements.receivedFilesList.innerHTML = '<p class="empty-tip">暂无接收的文件</p>';
+      return;
+    }
+
+    this.elements.receivedFilesList.innerHTML = files.map((file, index) => `
+      <div class="file-item" data-index="${index}" style="cursor: pointer;">
+        <div class="file-info">
+          <span class="file-icon">${Utils.getFileIcon(file.name)}</span>
+          <div class="file-details">
+            <span class="file-name">${file.name}</span>
+            <span class="file-size">${Utils.formatFileSize(file.size)}</span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+
+    this.elements.receivedFilesList.querySelectorAll('.file-item').forEach((item, index) => {
+      item.addEventListener('click', () => {
+        this.app.downloadFile(index);
+      });
+    });
+  }
+
+  renderHistory(history) {
+    if (history.length === 0) {
+      this.elements.transferHistory.innerHTML = '<p class="empty-tip">暂无记录</p>';
+      return;
+    }
+
+    this.elements.transferHistory.innerHTML = history.map(item => `
+      <div class="history-item">
+        <div class="history-info">
+          <span class="history-type ${item.type}">${item.type === 'sent' ? '发送' : '接收'}</span>
+          <span class="history-name">${item.name}</span>
+        </div>
+        <span class="history-size">${Utils.formatFileSize(item.size)}</span>
+      </div>
+    `).join('');
+  }
+
+  clearProgressList() {
+    this.elements.progressList.innerHTML = '';
+    this.elements.progressSection.classList.add('hidden');
+  }
+
+  resetRoomUI() {
+    this.elements.roomId.textContent = '------';
+    this.elements.roomDisplay.classList.remove('hidden');
+    this.elements.joinInputDisplay.classList.add('hidden');
+    this.elements.createRoomBtn.classList.remove('hidden');
+    this.elements.joinRoomBtn.classList.remove('hidden');
+    this.elements.confirmJoinBtn.classList.add('hidden');
+    this.elements.cancelJoinBtn.classList.add('hidden');
+    this.elements.disconnectBtn.classList.add('hidden');
+    this.elements.roomIdInput.value = '';
+    this.elements.fileList.innerHTML = '';
+    this.elements.sendFilesBtn.classList.add('hidden');
+    this.elements.devicesList.classList.add('hidden');
+  }
+}
+
+// ==========================================
+// 主应用类 (FileTransferApp)
+// ==========================================
+class FileTransferApp {
+  constructor() {
+    // 核心状态
+    this.roomId = null;
+    this.peerId = null;
+    this.nickname = localStorage.getItem('nickname') || '匿名';
+    this.isHost = false;
+    this.devices = {};
+    this.pendingConnections = new Set();
+    
+    // 数据存储
+    this.filesToSend = [];
+    this.receivedFiles = [];
+    this.receivedFileBlobs = {};
+    this.transferHistory = [];
+    this.messages = [];
+    this.selectedFileTargets = new Set();
+    this.selectedMessageTargets = new Set();
+
+    // 管理器实例
+    this.notificationManager = new NotificationManager();
+    this.fileTransfer = new FileTransferManager(this);
+    this.connectionManager = new ConnectionManager(this);
+    this.ui = new UIController(this);
+
+    this.init();
+  }
+
+  init() {
+    this.loadNickname();
+    this.ui.renderReceivedFiles(this.receivedFiles);
+    this.initPageVisibilityListener();
+    
+    // 请求通知权限
+    this.notificationManager.requestPermission();
+  }
+
+  loadNickname() {
+    if (this.nickname) {
+      this.ui.elements.nicknameInput.value = this.nickname;
+    }
+  }
+
+  initPageVisibilityListener() {
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && this.roomId) {
+        const openConnections = this.connectionManager.connections.filter(c => c.open);
+        if (openConnections.length === 0 && !this.connectionManager.isReconnecting) {
+          this.disconnect();
+        }
+      }
+    });
+  }
+
+  generateRoomId() {
+    const num = Math.floor(1000 + Math.random() * 9000);
+    return 'yan' + num;
+  }
+
+  async createRoom() {
+    try {
+      this.roomId = this.generateRoomId();
+      this.isHost = true;
+      this.ui.elements.roomId.textContent = this.roomId;
+      this.ui.elements.roomDisplay.classList.remove('hidden');
+      this.ui.elements.joinInputDisplay.classList.add('hidden');
+      this.ui.elements.createRoomBtn.classList.add('hidden');
+      this.ui.elements.joinRoomBtn.classList.add('hidden');
+      this.ui.elements.confirmJoinBtn.classList.add('hidden');
+      this.ui.elements.cancelJoinBtn.classList.add('hidden');
+      this.ui.elements.disconnectBtn.classList.remove('hidden');
+
+      this.ui.updateConnectionStatus('waiting', '等待连接');
+      
+      await this.connectionManager.initPeer(this.roomId);
+      
+      this.devices[this.peerId] = {
+        id: this.peerId,
+        nickname: this.nickname,
+        joinedAt: Date.now()
+      };
+      this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+      
+      this.ui.showToast('房间创建成功', 'success');
+    } catch (error) {
+      console.error('Failed to create room:', error);
+      this.ui.showToast('创建房间失败', 'error');
+      this.disconnect();
+    }
+  }
+
+  async joinRoom() {
+    const inputRoomId = this.ui.elements.roomIdInput.value.trim();
+    if (!inputRoomId) {
+      this.ui.showToast('请输入房间号后四位', 'error');
+      return;
+    }
+
+    try {
+      this.roomId = 'yan' + inputRoomId;
+      this.isHost = false;
+      this.ui.elements.roomId.textContent = this.roomId;
+      this.ui.elements.roomDisplay.classList.remove('hidden');
+      this.ui.elements.joinInputDisplay.classList.add('hidden');
+      this.ui.elements.createRoomBtn.classList.add('hidden');
+      this.ui.elements.joinRoomBtn.classList.add('hidden');
+      this.ui.elements.confirmJoinBtn.classList.add('hidden');
+      this.ui.elements.cancelJoinBtn.classList.add('hidden');
+      this.ui.elements.disconnectBtn.classList.remove('hidden');
+
+      this.ui.updateConnectionStatus('waiting', '正在连接...');
+      
+      await this.connectionManager.initPeer();
+      
+      this.devices[this.peerId] = {
+        id: this.peerId,
+        nickname: this.nickname,
+        joinedAt: Date.now()
+      };
+      this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+      
+      setTimeout(() => this.connectionManager.connectToRoom(this.roomId), 500);
+    } catch (error) {
+      console.error('Failed to join room:', error);
+      this.ui.showToast('加入房间失败', 'error');
+      this.disconnect();
+    }
+  }
+
+  disconnect() {
+    this.connectionManager.disconnectAll();
+    this.fileTransfer.cleanupAll();
+
+    this.roomId = null;
+    this.isHost = false;
+    this.devices = {};
+    this.filesToSend = [];
+    this.selectedFileTargets.clear();
+    this.selectedMessageTargets.clear();
+
+    this.ui.resetRoomUI();
+    this.ui.renderReceivedFiles(this.receivedFiles);
+    this.ui.renderMessages(this.messages);
+    this.ui.renderHistory(this.transferHistory);
+    this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+    this.ui.updateConnectionStatus('waiting', '等待连接');
+    this.ui.switchTab('settings');
+    this.ui.showToast('已断开连接', 'success');
+  }
+
+  addDevice(deviceId, nickname) {
+    this.devices[deviceId] = {
+      id: deviceId,
+      nickname: nickname,
+      joinedAt: Date.now()
+    };
+    this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+    this.refreshTargetDeviceLists();
+
+    const otherDevicesCount = Object.keys(this.devices).length - 1;
+    if (otherDevicesCount > 0) {
+      this.ui.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
+    }
+
+    if (this.isHost) {
+      this.broadcastNewDevice(deviceId, nickname);
+    }
+
+    this.ui.showToast(`${nickname} 加入了房间`, 'success');
+    this.notificationManager.show('新设备加入', {
+      body: `${nickname} 加入了房间`
+    });
+  }
+
+  broadcastNewDeviceImmediate(deviceId, nickname) {
+    const notifyMessage = {
+      type: 'new-device',
+      deviceId: deviceId,
+      nickname: nickname,
+      existingDevices: []
+    };
+
+    this.broadcast(notifyMessage);
+  }
+
+  broadcastNewDevice(deviceId, nickname) {
+    const otherDeviceIds = Object.keys(this.devices).filter(id => id !== deviceId && id !== this.peerId);
+
+    const newDeviceInfo = {
+      type: 'new-device',
+      deviceId: deviceId,
+      nickname: nickname,
+      existingDevices: otherDeviceIds.map(id => ({
+        deviceId: id,
+        nickname: this.devices[id]?.nickname || '匿名'
+      }))
+    };
+
+    const notifyExistingDevices = {
+      type: 'new-device',
+      deviceId: deviceId,
+      nickname: nickname,
+      existingDevices: []
+    };
+
+    this.connectionManager.connections.forEach(conn => {
+      if (conn.open) {
+        if (conn.peer === deviceId) {
+          conn.send(newDeviceInfo);
+        } else if (otherDeviceIds.includes(conn.peer)) {
+          conn.send(notifyExistingDevices);
+        }
+      }
+    });
+  }
+
+  removeDevice(deviceId) {
+    if (this.devices[deviceId]) {
+      const nickname = this.devices[deviceId].nickname;
+      delete this.devices[deviceId];
+      this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+      this.refreshTargetDeviceLists();
+      this.ui.showToast(`${nickname} 已离开`, 'success');
+      
+      if (this.isHost) {
+        this.broadcast({
+          type: 'device-left',
+          deviceId: deviceId,
+          nickname: nickname
+        });
+      }
+    }
+
+    this.connectionManager.connections = this.connectionManager.connections.filter(c => c.peer !== deviceId);
+
+    const otherDevicesCount = Object.keys(this.devices).length - 1;
+    if (otherDevicesCount > 0) {
+      this.ui.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
+    } else {
+      this.ui.updateConnectionStatus('waiting', '等待连接');
+    }
+  }
+
+  refreshTargetDeviceLists() {
+    const isFileTargetExpanded = this.ui.elements.fileTargetSpecific && this.ui.elements.fileTargetSpecific.checked;
+    const isMessageTargetExpanded = this.ui.elements.messageTargetSpecific && this.ui.elements.messageTargetSpecific.checked;
+
+    if (isFileTargetExpanded) {
+      this.ui.renderTargetDevicesList('file', this.devices, this.peerId, this.selectedFileTargets);
+    }
+    if (isMessageTargetExpanded) {
+      this.ui.renderTargetDevicesList('message', this.devices, this.peerId, this.selectedMessageTargets);
+    }
+  }
+
+  onFileTargetChange() {
+    if (this.ui.elements.fileTargetSpecific && this.ui.elements.fileTargetSpecific.checked) {
+      this.ui.elements.fileTargetDevices.classList.remove('hidden');
+      this.ui.renderTargetDevicesList('file', this.devices, this.peerId, this.selectedFileTargets);
+    } else {
+      this.ui.elements.fileTargetDevices.classList.add('hidden');
+      this.selectedFileTargets.clear();
+    }
+  }
+
+  onMessageTargetChange() {
+    if (this.ui.elements.messageTargetSpecific && this.ui.elements.messageTargetSpecific.checked) {
+      this.ui.elements.messageTargetDevices.classList.remove('hidden');
+      this.ui.renderTargetDevicesList('message', this.devices, this.peerId, this.selectedMessageTargets);
+    } else {
+      this.ui.elements.messageTargetDevices.classList.add('hidden');
+      this.selectedMessageTargets.clear();
+    }
+  }
+
+  connectToAllDevices() {
+    const deviceIds = Object.keys(this.devices).filter(id => id !== this.peerId && id !== this.roomId);
+    
+    deviceIds.forEach(deviceId => {
+      const hasConnection = this.connectionManager.connections.some(c => c.peer === deviceId && c.open);
+      if (!hasConnection) {
+        this.connectionManager.connectToDevice(deviceId);
+      }
+    });
+  }
+
+  sendNickname(conn = null) {
+    const message = {
+      type: 'nickname',
+      nickname: this.nickname,
+      from: this.peerId
+    };
+
+    if (conn) {
+      conn.send(message);
+    } else {
+      this.broadcast(message);
+    }
+  }
+
+  broadcast(data) {
+    const openConnections = this.connectionManager.connections.filter(c => c.open);
+
+    Object.keys(this.devices).forEach(deviceId => {
+      if (deviceId !== this.peerId) {
+        const conn = openConnections.find(c => c.peer === deviceId);
+        if (conn) {
+          try {
+            conn.send(data);
+          } catch (e) {
+            console.warn('Failed to send to device:', deviceId, e);
+          }
+        } else {
+          this.connectAndSend(deviceId, data);
+        }
+      }
+    });
+  }
+
+  sendToTargets(targets, data) {
+    if (targets.size === 0) {
+      return false;
+    }
+
+    let sentCount = 0;
+    targets.forEach(deviceId => {
+      let conn = this.connectionManager.connections.find(c => c.peer === deviceId && c.open);
+
+      if (conn) {
+        try {
+          conn.send(data);
+          sentCount++;
+        } catch (e) {
+          console.warn('Failed to send to target:', deviceId, e);
+        }
+      } else {
+        this.connectAndSend(deviceId, data);
+      }
+    });
+
+    return sentCount > 0;
+  }
+
+  connectAndSend(deviceId, data) {
+    if (this.connectionManager.peer && deviceId !== this.peerId) {
+      const conn = this.connectionManager.connectToDevice(deviceId);
+      if (conn) {
+        conn.on('open', () => {
+          conn.send(data);
+        });
+      }
+    }
+  }
+
+  updateProgress(fileId, progress, bytes, status = null) {
+    this.ui.updateProgress(fileId, progress, bytes, status);
+  }
+
+  addProgressItem(task) {
+    this.ui.addProgressItem(task);
+  }
+
+  showToast(message, type = 'success') {
+    this.ui.showToast(message, type);
+  }
+
+  addToHistory(type, name, size) {
+    this.transferHistory.push({ type, name, size, time: Date.now() });
+    this.ui.renderHistory(this.transferHistory);
+  }
+
+  addReceivedFile(name, size, blob) {
+    this.receivedFiles.push({ name, size, time: Date.now() });
+    this.receivedFileBlobs[name] = blob;
+    this.ui.renderReceivedFiles(this.receivedFiles);
+  }
+
+  handleFileSelect(e) {
+    const files = Array.from(e.target.files);
+    this.addFilesToQueue(files);
+  }
+
+  handleFileDrop(files) {
+    this.addFilesToQueue(Array.from(files));
+  }
+
+  addFilesToQueue(files) {
+    files.forEach(file => {
+      if (!this.filesToSend.find(f => f.name === file.name && f.size === file.size)) {
+        this.filesToSend.push(file);
+      }
+    });
+    this.ui.renderFileList(this.filesToSend);
+    this.ui.elements.sendFilesBtn.classList.remove('hidden');
+  }
+
+  removeFile(index) {
+    this.filesToSend.splice(index, 1);
+    this.ui.renderFileList(this.filesToSend);
+    if (this.filesToSend.length === 0) {
+      this.ui.elements.sendFilesBtn.classList.add('hidden');
+    }
+  }
+
+  sendFiles() {
+    if (this.filesToSend.length === 0) {
+      this.ui.showToast('请选择文件', 'error');
+      return;
+    }
+
+    const openConnections = this.connectionManager.connections.filter(c => c.open);
+    if (openConnections.length === 0) {
+      this.ui.showToast('未连接', 'error');
+      return;
+    }
+
+    const isSpecificTarget = this.ui.elements.fileTargetSpecific && this.ui.elements.fileTargetSpecific.checked;
+    if (isSpecificTarget && this.selectedFileTargets.size === 0) {
+      this.ui.showToast('请选择接收设备', 'error');
+      return;
+    }
+
+    this.ui.clearProgressList();
+    
+    const targets = isSpecificTarget ? this.selectedFileTargets : null;
+
+    this.filesToSend.forEach(file => {
+      const task = this.fileTransfer.createSendTask(file, targets);
+      this.fileTransfer.startSend(task.fileId);
+    });
+
+    this.filesToSend = [];
+    this.ui.renderFileList(this.filesToSend);
+    this.ui.elements.sendFilesBtn.classList.add('hidden');
+  }
+
+  clearProgress() {
+    this.ui.clearProgressList();
+  }
+
+  sendMessage() {
+    const message = this.ui.elements.messageInput.value.trim();
+    if (!message) {
+      this.ui.showToast('请输入内容', 'error');
+      return;
+    }
+
+    const openConnections = this.connectionManager.connections.filter(c => c.open);
+    if (openConnections.length === 0) {
+      this.ui.showToast('未连接', 'error');
+      return;
+    }
+
+    const isSpecificTarget = this.ui.elements.messageTargetSpecific && this.ui.elements.messageTargetSpecific.checked;
+    if (isSpecificTarget && this.selectedMessageTargets.size === 0) {
+      this.ui.showToast('请选择接收设备', 'error');
+      return;
+    }
+
+    const messageData = {
+      type: 'message',
+      content: message,
+      senderName: this.nickname || '我',
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    };
+
+    if (isSpecificTarget) {
+      this.sendToTargets(this.selectedMessageTargets, messageData);
+    } else {
+      this.broadcast(messageData);
+    }
+
+    this.addMessage(message, this.nickname || '我', 'sent', '刚刚');
+    this.ui.elements.messageInput.value = '';
+  }
+
+  addMessage(content, sender, type, time) {
+    const msgObj = { content, sender, type, time };
+    this.messages.push(msgObj);
+    this.ui.addMessage(msgObj);
+  }
+
+  handleData(data, conn) {
+    if (data.type === 'heartbeat') {
+      return;
+    } else if (data.type === 'nickname') {
+      this.pendingConnections.delete(conn.peer);
+
+      const wasNewDevice = !this.devices[conn.peer];
+      this.devices[conn.peer] = {
+        id: conn.peer,
+        nickname: data.nickname,
+        joinedAt: this.devices[conn.peer]?.joinedAt || Date.now()
+      };
+      this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+      this.refreshTargetDeviceLists();
+
+      const otherDevicesCount = Object.keys(this.devices).length - 1;
+      if (otherDevicesCount > 0) {
+        this.ui.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
+      }
+
+      if (wasNewDevice) {
+        this.ui.showToast(`${data.nickname} 加入了房间`, 'success');
+        if (this.isHost) {
+          setTimeout(() => this.broadcastNewDevice(conn.peer, data.nickname), 500);
+        }
+      }
+    } else if (data.type === 'request-devices') {
+      if (this.isHost) {
+        const devicesList = Object.keys(this.devices)
+          .filter(id => id !== this.peerId && id !== data.from)
+          .map(id => ({
+            deviceId: id,
+            nickname: this.devices[id]?.nickname || '匿名'
+          }));
+        conn.send({
+          type: 'devices-list',
+          devices: devicesList
+        });
+      }
+    } else if (data.type === 'devices-list') {
+      if (data.devices && Array.isArray(data.devices)) {
+        data.devices.forEach(dev => {
+          if (dev.deviceId !== this.peerId && !this.devices[dev.deviceId]) {
+            this.devices[dev.deviceId] = {
+              id: dev.deviceId,
+              nickname: dev.nickname,
+              joinedAt: Date.now()
+            };
+          }
+        });
+        this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+        this.refreshTargetDeviceLists();
+        if (!this.isHost) {
+          this.connectToAllDevices();
+        }
+      }
+    } else if (data.type === 'new-device') {
+      this.handleNewDevice(data);
+    } else if (data.type === 'device-left') {
+      if (this.devices[data.deviceId]) {
+        delete this.devices[data.deviceId];
+        this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+        this.refreshTargetDeviceLists();
+        this.ui.showToast(`${data.nickname} 已离开`, 'success');
+      }
+      this.connectionManager.connections = this.connectionManager.connections.filter(c => c.peer !== data.deviceId);
+      const otherDevicesCount = Object.keys(this.devices).length - 1;
+      if (otherDevicesCount <= 0) {
+        this.ui.updateConnectionStatus('waiting', '等待连接');
+      }
+    } else if (data.type === 'file-meta') {
+      const task = this.fileTransfer.createReceiveTask(
+        data.fileId,
+        data.fileName,
+        data.fileSize,
+        data.totalChunks,
+        data.senderName
+      );
+      this.ui.addProgressItem(task);
+      this.ui.showToast(`接收文件: ${data.fileName}`, 'success');
+    } else if (data.type === 'file-chunk') {
+      this.fileTransfer.handleChunk(data.fileId, data.chunk, data.chunkIndex, data.totalChunks);
+    } else if (data.type === 'file-complete') {
+      this.fileTransfer.completeReceive(data.fileId);
+    } else if (data.type === 'file-cancelled') {
+      this.fileTransfer.cancelReceive(data.fileId);
+      this.ui.showToast(`发送方取消了: ${data.fileName}`, 'error');
+    } else if (data.type === 'message') {
+      this.addMessage(data.content, data.senderName, 'received', data.time);
+      
+      this.notificationManager.show('收到新消息', {
+        body: `${data.senderName}: ${data.content.substring(0, 50)}${data.content.length > 50 ? '...' : ''}`
+      });
+    }
+  }
+
+  handleNewDevice(data) {
+    if (!this.devices[data.deviceId]) {
+      this.devices[data.deviceId] = {
+        id: data.deviceId,
+        nickname: data.nickname,
+        joinedAt: Date.now()
+      };
+      this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+      this.refreshTargetDeviceLists();
+      this.ui.showToast(`${data.nickname} 加入了房间`, 'success');
+    }
+
+    if (data.existingDevices && Array.isArray(data.existingDevices)) {
+      data.existingDevices.forEach(dev => {
+        if (!this.devices[dev.deviceId] && dev.deviceId !== this.peerId) {
+          this.devices[dev.deviceId] = {
+            id: dev.deviceId,
+            nickname: dev.nickname,
+            joinedAt: Date.now()
+          };
+        }
+      });
+      this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
+      this.refreshTargetDeviceLists();
+      this.connectToAllDevices();
+    }
+  }
+
+  addReceivedFile(name, size, blob) {
+    this.receivedFiles.push({ name, size, blob });
+    this.receivedFileBlobs[name] = blob;
+    this.ui.renderReceivedFiles(this.receivedFiles);
+  }
+
+  downloadFile(index) {
+    const file = this.receivedFiles[index];
+    if (!file) return;
+
+    const blob = file.blob;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  addToHistory(type, name, size) {
+    this.transferHistory.unshift({ type, name, size, time: Date.now() });
+    if (this.transferHistory.length > 100) {
+      this.transferHistory.pop();
+    }
+    this.ui.renderHistory(this.transferHistory);
+  }
+}
+
+// 初始化应用
 const app = new FileTransferApp();

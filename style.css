@@ -805,18 +805,35 @@ body {
   position: relative;
 }
 
+.progress-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.btn-pause,
 .btn-cancel {
-  position: absolute;
-  top: 50%;
-  right: 16px;
-  transform: translateY(-50%);
-  padding: 6px 12px;
-  font-size: 13px;
-  background: #fee2e2;
-  color: #dc2626;
+  flex: 1;
+  padding: 8px 12px;
   border: none;
   border-radius: 6px;
   cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.btn-pause {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.btn-pause:hover {
+  background: #fde68a;
+}
+
+.btn-cancel {
+  background: #fee2e2;
+  color: #dc2626;
 }
 
 .btn-cancel:hover {
@@ -828,7 +845,6 @@ body {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
-  padding-right: 70px;
 }
 
 .progress-name {
