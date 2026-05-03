@@ -15,39 +15,42 @@ body {
   background: #f8fafc;
   min-height: 100vh;
   color: #1e293b;
-  padding: 40px 20px 60px;
+  padding: 80px 20px 60px;
 }
 
 .container {
   width: 100%;
-  max-width: 600px;
+  max-width: 900px;
   margin: 0 auto;
   padding: 20px 16px;
 }
 
 .tab-nav {
-  position: sticky;
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
   background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(10px);
   z-index: 100;
-  padding: 12px 16px;
+  padding: 12px 0;
   border-bottom: 1px solid #e2e8f0;
-  margin: -40px -20px 0;
+  margin: 0;
   width: 100%;
+  box-sizing: border-box;
 }
 
 .tab-nav-inner {
   display: flex;
   justify-content: center;
   gap: 8px;
-  max-width: 600px;
+  max-width: 900px;
   margin: 0 auto;
+  padding: 0 16px;
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  width: 100%;
 }
 
 .tab-nav-inner::-webkit-scrollbar {
@@ -1123,6 +1126,99 @@ body {
   margin: 0;
 }
 
+/* 平板优化 (768px - 1023px) */
+@media (min-width: 768px) {
+  body {
+    padding: 80px 20px 80px;
+  }
+
+  .container {
+    padding: 30px 24px;
+  }
+
+  .page-header h2 {
+    font-size: 24px;
+  }
+
+  .settings-section {
+    padding: 24px;
+  }
+
+  .room-display {
+    padding: 28px 36px;
+  }
+
+  .room-display .room-id {
+    font-size: 32px;
+  }
+
+  .file-drop-zone {
+    padding: 48px 32px;
+    min-height: 220px;
+  }
+
+  .file-drop-zone .icon {
+    font-size: 56px;
+  }
+
+  .file-drop-zone .text {
+    font-size: 18px;
+  }
+
+  .file-drop-zone .subtext {
+    font-size: 15px;
+  }
+
+  .send-target-selector {
+    padding: 24px;
+  }
+
+  .target-option {
+    padding: 12px 20px;
+  }
+}
+
+/* 电脑优化 (1024px+) */
+@media (min-width: 1024px) {
+  body {
+    padding: 80px 20px 100px;
+  }
+
+  .container {
+    max-width: 1000px;
+    padding: 40px 32px;
+  }
+
+  .tab-nav-inner {
+    max-width: 1000px;
+  }
+
+  .page-header h2 {
+    font-size: 28px;
+  }
+
+  .settings-section {
+    padding: 32px;
+  }
+
+  .room-display {
+    padding: 36px 48px;
+  }
+
+  .room-display .room-id {
+    font-size: 38px;
+  }
+
+  .file-drop-zone {
+    padding: 56px 40px;
+    min-height: 260px;
+  }
+
+  .file-drop-zone .icon {
+    font-size: 64px;
+  }
+}
+
 @media (max-width: 767px) {
   html, body {
     width: 100%;
@@ -1131,7 +1227,7 @@ body {
   }
 
   body {
-    padding: 0 0 20px;
+    padding: 70px 16px 20px;
     position: relative;
   }
 
@@ -1155,7 +1251,7 @@ body {
 
   .container {
     max-width: 100%;
-    padding: 70px 16px 16px;
+    padding: 16px;
   }
 
   .page-header h2 {
