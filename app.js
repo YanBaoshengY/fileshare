@@ -248,7 +248,6 @@ class FileTransferManager {
 
       this.app.updateProgress(task.fileId, 100, task.fileSize, '已完成');
       this.app.addToHistory('sent', task.fileName, task.fileSize);
-      this.app.addReceivedFile(task.fileName, task.fileSize, task.file);
       this.app.showToast(`已发送: ${task.fileName}`, 'success');
       
       this.app.notificationManager.show('文件发送成功', {
@@ -495,19 +494,24 @@ class ConnectionManager {
       this.app.pendingConnections.add(conn.peer);
 
       if (!this.app.isHost && this.app.roomId && conn.peer === this.app.roomId) {
+        // 加入者连接到房主成功
         this.app.devices[this.app.roomId] = {
           id: this.app.roomId,
           nickname: '房主',
           joinedAt: Date.now()
         };
-        this.app.renderDevicesList();
+        this.app.ui.renderDevicesList(this.app.devices, this.app.peerId, this.app.isHost);
         this.app.connectToAllDevices();
         setTimeout(() => {
           conn.send({ type: 'request-devices', from: this.app.peerId });
         }, 300);
+        // 加入者连接到房主成功后更新状态并跳转
+        this.app.ui.updateConnectionStatus('connected', '已连接');
+        this.app.ui.switchTab('file');
       }
 
       if (this.app.isHost && conn.peer !== this.app.peerId) {
+        // 房主收到新连接
         const nicknameFromMeta = conn.metadata?.nickname || '匿名';
         if (!this.app.devices[conn.peer]) {
           this.app.devices[conn.peer] = {
@@ -515,8 +519,13 @@ class ConnectionManager {
             nickname: nicknameFromMeta,
             joinedAt: Date.now()
           };
-          this.app.renderDevicesList();
+          this.app.ui.renderDevicesList(this.app.devices, this.app.peerId, this.app.isHost);
           this.app.broadcastNewDeviceImmediate(conn.peer, nicknameFromMeta);
+        }
+        // 房主有新设备加入时更新状态
+        const otherDevicesCount = Object.keys(this.app.devices).length - 1;
+        if (otherDevicesCount > 0) {
+          this.app.ui.updateConnectionStatus('connected', `${otherDevicesCount} 个设备已连接`);
         }
       }
 
@@ -633,9 +642,9 @@ class ConnectionManager {
           nickname: this.app.nickname,
           joinedAt: Date.now()
         };
-        this.app.renderDevicesList();
-        this.app.updateConnectionStatus('waiting', '等待连接');
-        this.app.showToast('重连成功！', 'success');
+        this.app.ui.renderDevicesList(this.app.devices, this.app.peerId, this.app.isHost);
+        this.app.ui.updateConnectionStatus('waiting', '等待连接');
+        this.app.ui.showToast('重连成功！', 'success');
       } else {
         await this.initPeer();
         this.app.devices[this.app.peerId] = {
@@ -643,7 +652,7 @@ class ConnectionManager {
           nickname: this.app.nickname,
           joinedAt: Date.now()
         };
-        this.app.renderDevicesList();
+        this.app.ui.renderDevicesList(this.app.devices, this.app.peerId, this.app.isHost);
         setTimeout(() => this.connectToRoom(this.app.roomId), 500);
       }
       this.isReconnecting = false;
@@ -728,6 +737,7 @@ class UIController {
       joinInputDisplay: document.getElementById('joinInputDisplay'),
       roomId: document.getElementById('roomId'),
       connectionStatus: document.getElementById('connectionStatus'),
+      fileConnectionStatus: document.getElementById('file-connection-status'),
       roomIdInput: document.getElementById('roomIdInput'),
       devicesList: document.getElementById('devicesList'),
       devicesListContent: document.getElementById('devicesListContent'),
@@ -756,6 +766,15 @@ class UIController {
   }
 
   initEventListeners() {
+    // Tab 切换事件
+    const tabItems = document.querySelectorAll('.tab-item');
+    tabItems.forEach(item => {
+      item.addEventListener('click', () => {
+        const tabName = item.dataset.tab;
+        this.switchTab(tabName);
+      });
+    });
+
     this.elements.createRoomBtn.addEventListener('click', () => this.app.createRoom());
     this.elements.joinRoomBtn.addEventListener('click', () => this.showJoinForm());
     this.elements.confirmJoinBtn.addEventListener('click', () => this.app.joinRoom());
@@ -893,6 +912,11 @@ class UIController {
   updateConnectionStatus(status, message) {
     this.elements.connectionStatus.textContent = message;
     this.elements.connectionStatus.className = 'status ' + status;
+    
+    if (this.elements.fileConnectionStatus) {
+      this.elements.fileConnectionStatus.textContent = message;
+      this.elements.fileConnectionStatus.className = 'status ' + status;
+    }
     
     if (status === 'connected') {
       this.switchTab('file');
@@ -1167,6 +1191,28 @@ class UIController {
     this.elements.sendFilesBtn.classList.add('hidden');
     this.elements.devicesList.classList.add('hidden');
   }
+
+  switchTab(tabName) {
+    // 移除所有 tab 项的 active 状态
+    const tabItems = document.querySelectorAll('.tab-item');
+    tabItems.forEach(item => item.classList.remove('active'));
+    
+    // 添加当前 tab 的 active 状态
+    const activeTab = document.querySelector(`.tab-item[data-tab="${tabName}"]`);
+    if (activeTab) {
+      activeTab.classList.add('active');
+    }
+    
+    // 隐藏所有 tab 内容
+    const tabContents = document.querySelectorAll('.tab-content');
+    tabContents.forEach(content => content.classList.remove('active'));
+    
+    // 显示对应的 tab 内容
+    const activeContent = document.getElementById(`${tabName}-content`);
+    if (activeContent) {
+      activeContent.classList.add('active');
+    }
+  }
 }
 
 // ==========================================
@@ -1255,7 +1301,8 @@ class FileTransferApp {
       };
       this.ui.renderDevicesList(this.devices, this.peerId, this.isHost);
       
-      this.ui.showToast('房间创建成功', 'success');
+      this.ui.switchTab('file');
+      this.ui.showToast('房间创建成功，等待其他设备加入...', 'success');
     } catch (error) {
       console.error('Failed to create room:', error);
       this.ui.showToast('创建房间失败', 'error');

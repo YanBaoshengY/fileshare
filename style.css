@@ -112,12 +112,27 @@ body {
 
 .page-header {
   margin-bottom: 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .page-header h2 {
   font-size: 20px;
   font-weight: 600;
   color: #1e293b;
+}
+
+.connection-status-display {
+  margin-left: auto;
+}
+
+.connection-status-display .status {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .welcome-page {
