@@ -738,6 +738,7 @@ class UIController {
       roomId: document.getElementById('roomId'),
       connectionStatus: document.getElementById('connectionStatus'),
       fileConnectionStatus: document.getElementById('file-connection-status'),
+      messageConnectionStatus: document.getElementById('message-connection-status'),
       roomIdInput: document.getElementById('roomIdInput'),
       devicesList: document.getElementById('devicesList'),
       devicesListContent: document.getElementById('devicesListContent'),
@@ -918,6 +919,11 @@ class UIController {
       this.elements.fileConnectionStatus.className = 'status ' + status;
     }
     
+    if (this.elements.messageConnectionStatus) {
+      this.elements.messageConnectionStatus.textContent = message;
+      this.elements.messageConnectionStatus.className = 'status ' + status;
+    }
+    
     if (status === 'connected') {
       this.switchTab('file');
     }
@@ -1089,6 +1095,7 @@ class UIController {
     const progressBar = item.querySelector('.progress-bar');
     const progressStatus = item.querySelector('.progress-status');
     const progressDetails = item.querySelectorAll('.progress-details span');
+    const progressActions = item.querySelector('.progress-actions');
 
     if (progressBar) {
       progressBar.style.width = progress + '%';
@@ -1102,6 +1109,13 @@ class UIController {
 
     if (status) {
       progressStatus.textContent = status;
+    }
+
+    // 当状态是已完成时，隐藏按钮
+    if (status && status.includes('已完成')) {
+      if (progressActions) {
+        progressActions.style.display = 'none';
+      }
     }
   }
 
