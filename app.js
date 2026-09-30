@@ -785,6 +785,7 @@ class UIController {
   constructor(app) {
     this.app = app;
     this.elements = {};
+    this.hasAutoSwitched = false; // 是否已经因"连接成功"自动跳转过文件页
     this.initElements();
     this.initEventListeners();
   }
@@ -931,11 +932,16 @@ class UIController {
       }
     });
 
-    document.querySelectorAll('.tab-item').forEach(tab => {
-      tab.addEventListener('click', () => {
-        const tabName = tab.dataset.tab;
-        this.switchTab(tabName);
-      });
+    // 待发送文件列表：删除按钮（事件委托，只绑定一次）
+    this.elements.fileList.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('.file-remove');
+      if (removeBtn) {
+        const fileItem = removeBtn.closest('.file-item');
+        const index = parseInt(fileItem.dataset.index, 10);
+        if (!isNaN(index) && index >= 0 && index < this.app.filesToSend.length) {
+          this.app.removeFile(index);
+        }
+      }
     });
   }
 
@@ -1002,7 +1008,10 @@ class UIController {
       this.elements.messageConnectionStatus.className = 'status ' + status;
     }
     
-    if (status === 'connected') {
+    // 仅在本次会话第一次连接成功时自动跳转到文件页，
+    // 之后其他设备加入不再打断用户当前所在页面
+    if (status === 'connected' && !this.hasAutoSwitched) {
+      this.hasAutoSwitched = true;
       this.switchTab('file');
     }
   }
@@ -1103,17 +1112,6 @@ class UIController {
         <button class="file-remove">×</button>
       </div>
     `).join('');
-
-    this.elements.fileList.addEventListener('click', (e) => {
-      const removeBtn = e.target.closest('.file-remove');
-      if (removeBtn) {
-        const fileItem = removeBtn.closest('.file-item');
-        const index = parseInt(fileItem.dataset.index, 10);
-        if (!isNaN(index) && index >= 0 && index < files.length) {
-          this.app.removeFile(index);
-        }
-      }
-    });
   }
 
   addProgressItem(task) {
@@ -1285,28 +1283,8 @@ class UIController {
     if (this.elements.roomShare) {
       this.elements.roomShare.style.display = 'none';
     }
-  }
-
-  switchTab(tabName) {
-    // 移除所有 tab 项的 active 状态
-    const tabItems = document.querySelectorAll('.tab-item');
-    tabItems.forEach(item => item.classList.remove('active'));
-    
-    // 添加当前 tab 的 active 状态
-    const activeTab = document.querySelector(`.tab-item[data-tab="${tabName}"]`);
-    if (activeTab) {
-      activeTab.classList.add('active');
-    }
-    
-    // 隐藏所有 tab 内容
-    const tabContents = document.querySelectorAll('.tab-content');
-    tabContents.forEach(content => content.classList.remove('active'));
-    
-    // 显示对应的 tab 内容
-    const activeContent = document.getElementById(`${tabName}-content`);
-    if (activeContent) {
-      activeContent.classList.add('active');
-    }
+    // 断开/重置后允许下次连接成功再次自动跳转
+    this.hasAutoSwitched = false;
   }
 }
 
@@ -1326,7 +1304,6 @@ class FileTransferApp {
     // 数据存储
     this.filesToSend = [];
     this.receivedFiles = [];
-    this.receivedFileBlobs = {};
     this.transferHistory = [];
     this.messages = [];
     this.selectedFileTargets = new Set();
@@ -1358,12 +1335,19 @@ class FileTransferApp {
 
   initPageVisibilityListener() {
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && this.roomId) {
-        const openConnections = this.connectionManager.connections.filter(c => c.open);
-        if (openConnections.length === 0 && !this.connectionManager.isReconnecting) {
-          this.disconnect();
-        }
-      }
+      if (document.hidden || !this.roomId) return;
+      if (this.connectionManager.isReconnecting) return;
+
+      const openConnections = this.connectionManager.connections.filter(c => c.open);
+      if (openConnections.length > 0) return;
+
+      // 房主独自等待其他设备加入时，没有 open 连接是正常状态，不能断开
+      const otherDeviceCount = Object.keys(this.devices)
+        .filter(id => id !== this.peerId).length;
+      if (this.isHost && otherDeviceCount === 0) return;
+
+      // 非房主（或房主的设备全部掉线）时清理失效连接
+      this.disconnect();
     });
   }
 
@@ -1402,6 +1386,7 @@ class FileTransferApp {
         this.ui.elements.roomShareCode.textContent = shareCode;
         
         this.ui.switchTab('file');
+        this.ui.hasAutoSwitched = true; // 房主已在文件页等待，后续设备加入不再强制跳转
         this.ui.showToast('房间创建成功，等待其他设备加入...', 'success');
         return;
       } catch (error) {
@@ -1704,17 +1689,6 @@ class FileTransferApp {
     this.ui.showToast(message, type);
   }
 
-  addToHistory(type, name, size) {
-    this.transferHistory.push({ type, name, size, time: Date.now() });
-    this.ui.renderHistory(this.transferHistory);
-  }
-
-  addReceivedFile(name, size, blob) {
-    this.receivedFiles.push({ name, size, time: Date.now() });
-    this.receivedFileBlobs[name] = blob;
-    this.ui.renderReceivedFiles(this.receivedFiles);
-  }
-
   handleFileSelect(e) {
     const files = Array.from(e.target.files);
     this.addFilesToQueue(files);
@@ -1945,8 +1919,7 @@ class FileTransferApp {
   }
 
   addReceivedFile(name, size, blob) {
-    this.receivedFiles.push({ name, size, blob });
-    this.receivedFileBlobs[name] = blob;
+    this.receivedFiles.push({ name, size, blob, time: Date.now() });
     this.ui.renderReceivedFiles(this.receivedFiles);
   }
 
@@ -1962,7 +1935,8 @@ class FileTransferApp {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // 延迟释放 URL：同步 revoke 会导致 Safari/Firefox 来不及开始下载
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
   addToHistory(type, name, size) {
