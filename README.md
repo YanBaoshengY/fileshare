@@ -3,7 +3,7 @@
 一个基于 WebRTC (PeerJS) 的局域网文件传输和即时消息应用。
 
 ## 版本
-v1.2.0
+v1.2.1
 
 ## 功能特性
 
@@ -20,7 +20,7 @@ v1.2.0
 - ⚡ **自动重连**：网络中断后自动尝试重连，支持指数退避
 - 📦 **模块化架构**：代码拆分为独立模块，提升可维护性
 - 💾 **内存优化**：限制并发传输和内存使用，防止大文件导致浏览器崩溃
-- ⏸️ **暂停/继续**：支持暂停和继续文件传输
+- ⏸️ **暂停/继续**：支持暂停和继续文件传输（当前仅发送端本地生效，接收端暂停通知与断点续传在规划中）
 - 🔔 **浏览器通知**：新消息和文件接收时发送桌面通知
 
 ### 中优先级优化
@@ -97,37 +97,41 @@ v1.2.0
 ### NotificationManager 类
 浏览器通知管理器：
 - `requestPermission()` - 请求通知权限
-- `send(title, body, icon)` - 发送通知
-- `isSupported()` - 检查浏览器支持
+- `show(title, options)` - 发送桌面通知（页面可见时不弹出）
 
 ### FileTransferManager 类
 文件传输管理器：
-- `sendFiles(files, onProgress, onComplete, onError)` - 发送文件
-- `handleMeta(meta)` - 处理文件元数据
-- `handleChunk(chunk)` - 处理文件数据块
-- `handleComplete(completeData)` - 处理传输完成
-- `cancelTransfer(transferId)` - 取消传输
-- `pauseTransfer(transferId)` - 暂停传输
-- `resumeTransfer(transferId)` - 继续传输
-- `cleanup()` - 清理资源
+- `createSendTask(file, targets)` - 创建发送任务
+- `createReceiveTask(fileId, fileName, fileSize, totalChunks, senderName)` - 创建接收任务
+- `startSend(fileId)` - 开始/继续发送
+- `pauseTransfer(fileId)` - 暂停传输（仅发送端）
+- `resumeTransfer(fileId)` - 继续传输
+- `cancelTransfer(fileId)` - 取消传输
+- `handleChunk(fileId, chunk, chunkIndex, totalChunks)` - 处理接收数据块
+- `completeReceive(fileId)` - 完成文件接收（校验数据块完整性）
+- `cancelReceive(fileId)` - 取消接收
+- `cleanupTask(fileId)` / `cleanupAll()` - 清理任务释放内存
 
 ### ConnectionManager 类
 连接管理器：
-- `initialize(peerId)` - 初始化连接
-- `connectTo(targetId)` - 连接到目标
-- `send(data)` - 发送数据
-- `disconnect()` - 断开连接
-- `reconnect()` - 尝试重连
-- `isConnected()` - 检查连接状态
+- `initPeer(customId)` - 初始化 Peer（支持指定房间号，含 15s 超时保护）
+- `connectToRoom(roomId)` - 加入房间（连接房主）
+- `connectToDevice(deviceId)` - 连接到指定设备
+- `handleNewConnection(conn)` - 处理新接入的连接
+- `attemptReconnect()` - 指数退避自动重连
+- `startHeartbeat()` / `stopHeartbeat()` - 心跳管理
+- `handlePeerError(err)` - 错误分类与提示
+- `disconnectAll()` - 断开所有连接并销毁 Peer
 
 ### UIController 类
 UI 控制器：
-- `renderDeviceList(devices)` - 渲染设备列表
-- `renderProgressItem(item)` - 渲染传输进度项
-- `renderReceivedFile(file)` - 渲染接收的文件
-- `renderHistoryItem(item)` - 渲染历史项
-- `renderMessage(msg)` - 渲染消息
-- `updateConnectionStatus(status)` - 更新连接状态
+- `renderDevicesList(devices, peerId, isHost)` - 渲染设备列表
+- `renderTargetDevicesList(type, devices, peerId, selectedTargets)` - 渲染发送目标选择列表
+- `renderFileList(files)` / `addProgressItem(task)` / `updateProgress(...)` - 待发送与进度渲染
+- `renderMessages(messages)` - 渲染聊天消息（内容做 HTML 转义）
+- `renderReceivedFiles(files)` / `renderHistory(history)` - 接收文件与历史记录
+- `updateConnectionStatus(status, message)` - 更新连接状态（仅首次连接成功自动跳转文件页）
+- `showToast(message, type)` / `switchTab(tabName)` / `resetRoomUI()` - 交互反馈与页面切换
 
 ### FileTransferApp 类
 主应用类，协调各模块工作。
@@ -144,27 +148,29 @@ UI 控制器：
 | `devices-list` | 返回设备列表 |
 | `new-device` | 新设备加入通知 |
 | `device-left` | 设备离开通知 |
-| `file-meta` | 文件元数据 |
+| `file-meta` | 文件元数据（接收端超限时不回执创建任务，直接拒绝） |
 | `file-chunk` | 文件数据块 |
 | `file-complete` | 文件传输完成 |
 | `file-cancelled` | 文件传输取消 |
-| `file-pause` | 暂停传输 |
-| `file-resume` | 继续传输 |
-| `file-resume-request` | 请求恢复传输（含偏移量） |
+| `file-rejected` | 接收端在 meta 阶段拒绝超大文件（reason: too-large） |
 | `message` | 聊天消息 |
+
+> 注：`file-pause` / `file-resume` / `file-resume-request`（含偏移量的断点续传协议）为规划中的消息类型，当前版本尚未实现，暂停仅在发送端本地生效。
 
 ## 文件传输机制
 
 - **分块传输**：文件被分成 64KB 的数据块进行传输
-- **进度显示**：实时显示传输进度、速度和剩余时间
-- **暂停/继续**：支持暂停和恢复传输，支持从断点续传
-- **内存限制**：最大并发传输数（3）和内存上限（500MB）
+- **进度显示**：实时显示传输进度（速度/剩余时间显示在规划中）
+- **暂停/继续**：当前仅发送端本地生效；接收端感知与断点续传在规划中
+- **内存限制**：接收上限 1GB；接收缓冲使用 Blob（可被浏览器落盘存储），峰值内存远低于文件体积；`file-meta` 阶段即预判拒绝超大文件并回执 `file-rejected`（最大并发传输数限制在规划中）
+- **完整性校验**：接收完成时检查数据块是否齐全，缺块则丢弃并提示
 - **自动清理**：传输完成后自动清理数据，防止内存泄漏
 
 ## 错误处理和重连
 
 - **错误分类**：网络错误、文件错误、连接错误
-- **自动重连**：3次重连尝试，指数退避（1s, 2s, 4s）
+- **自动重连**：最多 5 次重连尝试，指数退避（2s, 4s, 8s, 16s, 32s）
+- **超时保护**：Peer 初始化 15 秒超时自动放弃并提示
 - **用户通知**：友好的错误提示和状态更新
 - **连接状态**：实时显示连接状态和重连进度
 
@@ -191,13 +197,23 @@ UI 控制器：
 
 在 app.js 中可以修改以下配置：
 
-- `MAX_CONCURRENT_TRANSFERS = 3` - 最大并发传输数
-- `MAX_MEMORY_SIZE = 500 * 1024 * 1024` - 最大内存使用（500MB）
-- `CHUNK_SIZE = 64 * 1024` - 数据块大小（64KB）
-- `MAX_RECONNECT_ATTEMPTS = 3` - 最大重连次数
-- `RECONNECT_DELAY = 1000` - 重连初始延迟（ms）
+- `CHUNK_SIZE = 64 * 1024` - 数据块大小（64KB，FileTransferManager）
+- `MAX_MEMORY_SIZE = 1024 * 1024 * 1024` - 接收文件上限（1GB，FileTransferManager）
+- `maxReconnectAttempts = 5` - 最大重连次数（ConnectionManager）
+- `reconnectDelay = 2000` - 重连初始延迟（ms，ConnectionManager）
+- `10000` - 心跳间隔（ms，startHeartbeat）
 
 ## 更新日志
+
+### v1.2.1 (2026-09-30)
+- 🐛 修复待发送文件列表删除按钮事件重复绑定（点一次连删多个文件）
+- 🐛 修复新设备加入时强制跳转到文件页打断用户操作（仅首次连接成功自动跳转）
+- 🐛 修复页面切后台再返回时房主被误断开连接
+- 🐛 修复下载接收文件时 Object URL 同步释放导致部分浏览器下载失败
+- 🧹 删除 FileTransferApp 中重复定义的 `addToHistory` / `addReceivedFile` 及无用的 `receivedFileBlobs`
+- 🧹 删除 UIController 中重复的 `switchTab` 定义与重复绑定的 tab 切换监听
+- 📝 修订文档中与实现不符的描述（重连参数、暂停/续传范围、模块 API 表）
+- ⬆️ 接收上限从 500MB 提升至 1GB：接收缓冲改用 Blob（可落盘），并在 `file-meta` 阶段预判拒绝超大文件、新增 `file-rejected` 回执通知发送方
 
 ### v1.2.0 (2026)
 - ✅ 添加自动重连机制
