@@ -108,7 +108,7 @@ class FileTransferManager {
     this.app = app;
     this.transfers = new Map(); // 活跃的传输任务
     this.CHUNK_SIZE = 64 * 1024; // 64KB
-    this.MAX_MEMORY_SIZE = 500 * 1024 * 1024; // 500MB 最大内存占用
+    this.MAX_MEMORY_SIZE = 1024 * 1024 * 1024; // 1GB 接收上限（Blob 缓冲可落盘，峰值内存远低于文件体积）
   }
 
   /**
@@ -323,8 +323,10 @@ class FileTransferManager {
 
     if (task.status !== 'receiving') return;
 
-    task.chunks[chunkIndex] = chunk;
-    task.receivedBytes += chunk.byteLength;
+    // 攒 Blob 而不是 ArrayBuffer：浏览器 Blob 存储可落盘，大幅降低峰值内存
+    const blob = chunk instanceof Blob ? chunk : new Blob([chunk]);
+    task.chunks[chunkIndex] = blob;
+    task.receivedBytes += blob.size;
     task.currentChunk = Math.max(task.currentChunk, chunkIndex + 1);
     task.progress = Math.round((task.currentChunk / totalChunks) * 100);
 
@@ -1865,6 +1867,20 @@ class FileTransferApp {
         this.ui.updateConnectionStatus('waiting', '等待连接');
       }
     } else if (data.type === 'file-meta') {
+      // meta 阶段预判：超过接收上限直接拒绝并回执，避免白收一半再丢弃
+      if (data.fileSize > this.fileTransfer.MAX_MEMORY_SIZE) {
+        conn.send({
+          type: 'file-rejected',
+          fileId: data.fileId,
+          fileName: data.fileName,
+          reason: 'too-large'
+        });
+        this.ui.showToast(
+          `拒绝接收 ${data.fileName}：超过 ${Utils.formatFileSize(this.fileTransfer.MAX_MEMORY_SIZE)} 上限`,
+          'error'
+        );
+        return;
+      }
       const task = this.fileTransfer.createReceiveTask(
         data.fileId,
         data.fileName,
@@ -1874,6 +1890,15 @@ class FileTransferApp {
       );
       this.ui.addProgressItem(task);
       this.ui.showToast(`接收文件: ${data.fileName}`, 'success');
+    } else if (data.type === 'file-rejected') {
+      const task = this.fileTransfer.transfers.get(data.fileId);
+      if (task && (task.status === 'sending' || task.status === 'paused')) {
+        this.ui.updateProgress(data.fileId, task.progress, task.sentBytes, '对方超限，已拒绝');
+        this.ui.showToast(
+          `${data.fileName} 被对方拒绝：超过 ${Utils.formatFileSize(this.fileTransfer.MAX_MEMORY_SIZE)} 接收上限`,
+          'error'
+        );
+      }
     } else if (data.type === 'file-chunk') {
       this.fileTransfer.handleChunk(data.fileId, data.chunk, data.chunkIndex, data.totalChunks);
     } else if (data.type === 'file-complete') {
